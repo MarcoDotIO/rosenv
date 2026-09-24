@@ -9,16 +9,16 @@
   <img src="https://img.shields.io/badge/host-Ubuntu%2024.04-6a8aac" alt="Ubuntu 24.04 host">
 </p>
 
-**A project and dependency manager for ROS 2, inspired by uv and pyenv.** Choose a ROS distribution, declare packages, commit a lockfile, and run your workspace inside a persistent Docker environment.
+**A project and dependency manager for ROS 2.** Choose a ROS distribution, declare packages, commit a lockfile, and run your workspace inside a persistent Docker environment.
 
-[Get started](#quick-start) · [User guide](docs/guide.md) · [Architecture](docs/architecture.md) · [uv comparison](docs/uv-parity.md) · [Contributing](CONTRIBUTING.md)
+[Get started](#quick-start) · [User guide](docs/guide.md) · [Features](docs/features.md) · [Architecture](docs/architecture.md) · [Contributing](CONTRIBUTING.md)
 
-## Why rosenv?
+## Features
 
-- **One project, one ROS environment.** Humble and Jazzy can coexist on the same Ubuntu 24.04 host.
-- **Dependencies belong in version control.** `rosenv.toml` declares ROS and Ubuntu packages; `rosenv.lock` records the resolved package inventory and base image.
-- **Run with the right setup.** `rosenv run`, `build`, and `test` enter the environment and source ROS plus your workspace overlay.
-- **Keep your work.** Your workspace is mounted from the host. Container replacement preserves the project workspace and private home.
+- **Distribution isolation.** Run Humble and Jazzy in separate environments on the same Ubuntu 24.04 host.
+- **Declarative dependencies.** `rosenv.toml` declares ROS and Ubuntu packages; `rosenv.lock` records the resolved package inventory and base image.
+- **Workspace execution.** `rosenv run`, `build`, and `test` enter the environment and source ROS plus your workspace overlay.
+- **Persistent storage.** The workspace is mounted from the host. Container replacement preserves the project workspace and private home.
 
 rosenv manages ROS userspace with Docker. It does not install ROS into the host operating system or promise isolation from hostile code.
 
@@ -105,7 +105,7 @@ ROS names such as `demo_nodes_cpp` resolve to `ros-jazzy-demo-nodes-cpp`; `apt:`
 | Manage named environments | `rosenv env create`, `rosenv env list`, `rosenv env stop`, `rosenv env remove` |
 | Maintain the local cache | `rosenv cache list`, `rosenv cache clean --yes` |
 
-Existing `create`, `list`, `local`, `global`, `show`, and `stop` workflows remain available. Use `rosenv --help` and each command's `--help` for flags. [uv-inspired scope and differences](docs/uv-parity.md).
+Existing `create`, `list`, `local`, `global`, `show`, and `stop` workflows remain available. Use `rosenv --help` and each command's `--help` for flags. See [feature behavior and scope](docs/features.md) for synchronization modes, dependency profiles, and cache behavior.
 
 ## ROS distributions
 
@@ -121,11 +121,11 @@ All five distributions run in their own container userspace on the Ubuntu 24.04 
 
 Jazzy is the default. `ros-core`, `ros-base`, and `perception` select official image variants. CI exercises Jazzy and Humble; the extended workflow exercises Lyrical. Kilted, Rolling, ARM64, hardware, and GUI support are not established by that matrix. Distribution data follows [ROS releases](https://github.com/ros2/ros2_documentation/blob/rolling/source/Releases.rst) and [official image definitions](https://github.com/docker-library/official-images/blob/master/library/ros).
 
-## Boundaries that matter
+## Runtime limitations
 
 Default networking uses a dedicated Docker bridge and an allocated `ROS_DOMAIN_ID`. Host networking is opt-in for LAN discovery. Normal commands run with your host UID/GID; package management runs as root inside the container. Your mounted workspace and private home are writable, and files inside them are visible to container commands.
 
-A lock describes one architecture and selected dependency-group profile. Source overlays, arbitrary shell changes, host devices, and robot behavior are outside its package guarantee. This release does not provide GUI/GPU/USB passthrough, a native macOS/Windows backend, automatic host-shell activation, or full uv command compatibility. [Architecture and isolation](docs/architecture.md) explains the details.
+A lock describes one architecture and selected dependency-group profile. Source overlays, arbitrary shell changes, host devices, and robot behavior are outside its package guarantee. This release does not provide GUI/GPU/USB passthrough, a native macOS/Windows backend, or automatic host-shell activation. [Architecture and isolation](docs/architecture.md) explains the details.
 
 ## Development
 
@@ -137,6 +137,6 @@ uv run pytest -q
 uv build
 ```
 
-CI checks Python 3.11–3.13, formatting, unit tests, distribution contents, clean wheel installation, and real Docker/ROS workflows. Workflow badges reflect hosted results; authoring a workflow or running local tests is not a successful hosted run. [Contributing](CONTRIBUTING.md) covers integration tests; [releasing](docs/releasing.md) describes gated GitHub Releases and the manual rehearsal workflow.
+CI checks Python 3.11–3.13, formatting, unit tests, distribution contents, clean wheel installation, and real Docker/ROS workflows. [Contributing](CONTRIBUTING.md) covers integration tests; [releasing](docs/releasing.md) describes gated GitHub Releases and the manual rehearsal workflow.
 
 Licensed under [MIT](LICENSE).

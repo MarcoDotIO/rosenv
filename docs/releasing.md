@@ -12,7 +12,7 @@ Pull requests, pushes to `main`, and manual CI runs use the same reusable workfl
 
 Python dependencies are resolved through the committed `uv.lock`. External actions are pinned to full commit IDs, with version comments for review. Dependabot proposes updates to GitHub Actions and uv dependencies.
 
-Workflow definitions describe intended checks. Inspect the [Actions run](https://github.com/MarcoDotIO/rosenv/actions) for the exact commit and completed job results before treating a change as verified. Integration covers containerized ROS userspace; it does not validate robots, hardware drivers, GUI applications, or cross-distribution communication.
+The [Actions page](https://github.com/MarcoDotIO/rosenv/actions) records results and artifacts for each tested commit. Integration covers containerized ROS userspace; robots, hardware drivers, GUI applications, and cross-distribution communication require separate validation.
 
 ## Rehearse a release
 
