@@ -1,0 +1,38 @@
+[build-system]
+requires = ["hatchling>=1.26"]
+build-backend = "hatchling.build"
+
+[project]
+name = "rosenv-manager"
+version = "0.2.0"
+description = "Persistent, isolated ROS 2 development environments on Linux"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+dependencies = ["tomlkit>=0.13,<1"]
+
+[project.urls]
+Homepage = "https://github.com/MarcoDotIO/rosenv"
+Repository = "https://github.com/MarcoDotIO/rosenv"
+Issues = "https://github.com/MarcoDotIO/rosenv/issues"
+
+[project.optional-dependencies]
+test = ["pytest>=8.3,<10"]
+
+[project.scripts]
+rosenv = "rosenv.cli:main"
+
+[dependency-groups]
+dev = ["pytest>=8.3,<10", "ruff>=0.11", "twine>=6"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/rosenv"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]

@@ -1,0 +1,34 @@
+name: Bug report
+description: Report unexpected rosenv behavior with a reproducible example.
+body:
+  - type: markdown
+    attributes:
+      value: Please remove credentials, private paths, and workstation addresses from logs. For vulnerabilities, follow SECURITY.md.
+  - type: textarea
+    id: behavior
+    attributes:
+      label: What happened?
+      description: Explain the expected behavior and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction
+      description: Include commands and a minimal rosenv.toml if relevant.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Include rosenv, Python, Docker, host OS, architecture, and ROS distribution versions.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Paste sanitized output. Do not attach .env files or unreviewed doctor output.
+      render: text

@@ -1,0 +1,19 @@
+name: Extended ROS integration
+
+on:
+  schedule:
+    - cron: '19 5 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: extended-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lyrical:
+    uses: ./.github/workflows/integration.yml
+    with:
+      distros: '["lyrical"]'

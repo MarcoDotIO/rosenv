@@ -1,0 +1,21 @@
+name: Feature request
+description: Suggest a workflow or improvement.
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to accomplish?
+      description: Describe the development workflow and the current obstacle.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Include example commands or configuration if helpful.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered

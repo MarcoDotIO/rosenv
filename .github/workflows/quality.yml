@@ -1,0 +1,83 @@
+name: Quality
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  tests:
+    name: Python ${{ matrix.python }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.11', '3.12', '3.13']
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: '0.12.18'
+          python-version: ${{ matrix.python }}
+          enable-cache: true
+      - run: uv sync --locked --group dev
+      - run: uv run --locked pytest -q
+
+  lint:
+    name: Lint and format
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: '0.12.18'
+          python-version: '3.12'
+          enable-cache: true
+      - run: uv sync --locked --group dev
+      - run: uv run --locked ruff check src tests scripts .github/scripts
+      - run: uv run --locked ruff format --check src tests scripts .github/scripts
+
+  package:
+    name: Build and inspect distributions
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: '0.12.18'
+          python-version: '3.12'
+          enable-cache: true
+      - run: uv build
+      - run: uvx --from twine==7.0.0 twine check --strict dist/*
+      - run: uv run --no-project python .github/scripts/verify_dist.py
+      - name: Install wheel in a clean environment
+        run: |
+          uv venv "$RUNNER_TEMP/rosenv-wheel"
+          uv pip install --python "$RUNNER_TEMP/rosenv-wheel/bin/python" dist/*.whl
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/rosenv-wheel/bin/rosenv" --version
+          "$RUNNER_TEMP/rosenv-wheel/bin/rosenv" distros
+          "$RUNNER_TEMP/rosenv-wheel/bin/rosenv" --help
+      - name: Checksum release files
+        working-directory: dist
+        run: sha256sum *.whl *.tar.gz > SHA256SUMS
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: python-distributions
+          path: dist/
+          if-no-files-found: error
+          retention-days: 14

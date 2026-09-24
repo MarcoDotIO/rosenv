@@ -1,0 +1,64 @@
+name: Docker integration
+
+on:
+  workflow_call:
+    inputs:
+      distros:
+        description: JSON array of ROS distributions to exercise
+        type: string
+        default: '["jazzy", "humble"]'
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  ros:
+    name: ROS ${{ matrix.distro }} on Ubuntu 24.04
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        distro: ${{ fromJSON(inputs.distros) }}
+    env:
+      ROSENV_TEST_DISTRO: ${{ matrix.distro }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: '0.12.18'
+          python-version: '3.12'
+          enable-cache: true
+      - run: uv sync --locked --group dev
+      - name: Verify non-root Docker access
+        run: |
+          test "$(id -u)" -ne 0
+          docker info
+          uv run --locked rosenv doctor
+          mkdir -p artifacts
+      - name: Named environment lifecycle and ROS messaging
+        run: |
+          uv run --locked python scripts/smoke_test.py \
+            --distros "$ROSENV_TEST_DISTRO" \
+            --report "artifacts/environment-$ROSENV_TEST_DISTRO.json" \
+            2>&1 | tee "artifacts/environment-$ROSENV_TEST_DISTRO.log"
+      - name: Project locking and synchronization
+        run: |
+          uv run --locked python scripts/project_smoke.py \
+            --distro "$ROSENV_TEST_DISTRO" \
+            --report "artifacts/project-$ROSENV_TEST_DISTRO.json" \
+            2>&1 | tee "artifacts/project-$ROSENV_TEST_DISTRO.log"
+      - name: Save integration evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: integration-${{ matrix.distro }}
+          path: artifacts/
+          if-no-files-found: warn
+          retention-days: 14

@@ -1,0 +1,13 @@
+[project]
+name = "hello-ros"
+ros = "jazzy"
+variant = "ros-base"
+dependencies = ["demo_nodes_cpp"]
+
+[dependency-groups]
+dev = ["apt:python3-pytest"]
+
+[tasks]
+hello = ["ros2", "run", "hello_rosenv", "hello"]
+talker = ["ros2", "run", "demo_nodes_cpp", "talker"]
+listener = ["ros2", "run", "demo_nodes_cpp", "listener"]

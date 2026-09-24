@@ -1,0 +1,71 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  version:
+    name: Verify version and tag
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Verify tag matches package version
+        env:
+          RELEASE_EVENT: ${{ github.event_name }}
+          RELEASE_REF: ${{ github.ref_name }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import pathlib
+          import re
+          import tomllib
+          version = tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['version']
+          source = pathlib.Path('src/rosenv/__init__.py').read_text()
+          match = re.search(r'__version__\s*=\s*[\x22\x27]([^\x22\x27]+)', source)
+          assert match and match[1] == version, 'Package and runtime versions disagree'
+          if os.environ['RELEASE_EVENT'] == 'push':
+              assert os.environ['RELEASE_REF'] == f'v{version}', 'Tag does not match package version'
+          print(f'Validated version {version}; manual dispatch only rehearses the release.')
+          PY
+  quality:
+    needs: version
+    uses: ./.github/workflows/quality.yml
+  integration:
+    needs: version
+    uses: ./.github/workflows/integration.yml
+  publish:
+    name: Publish verified GitHub Release
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [quality, integration]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: python-distributions
+          path: dist
+      - name: Verify downloaded checksums
+        working-directory: dist
+        run: sha256sum --check SHA256SUMS
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$RELEASE_TAG" dist/*.whl dist/*.tar.gz dist/SHA256SUMS \
+            --repo "$GH_REPO" --verify-tag --title "rosenv $RELEASE_TAG" --generate-notes

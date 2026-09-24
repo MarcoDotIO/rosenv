@@ -1,0 +1,26 @@
+.env
+.env.*
+!.env.example
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+dist/
+*.egg-info/
+.DS_Store
+._*
+.rosenv/
+.rosenv.edit.lock
+build/
+install/
+log/
+coverage.xml
+.coverage
+htmlcov/
+.local/
+# Local workstation receipts are retained privately, not published.
+docs/VALIDATION.md
+docs/validation-*.json
+docs/workstation-install.json
+docs/lyrical-abi-recovery.txt
