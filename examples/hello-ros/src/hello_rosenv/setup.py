@@ -9,5 +9,5 @@ setup(
         ("share/hello_rosenv", ["package.xml"]),
     ],
     entry_points={"console_scripts": ["hello = hello_rosenv.node:main"]},
-    tests_require=["pytest"],
+    extras_require={"test": ["pytest"]},
 )
