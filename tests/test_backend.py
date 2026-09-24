@@ -220,12 +220,12 @@ class BackendTests(unittest.TestCase):
         with patch("rosenv.backend.subprocess.run", side_effect=KeyboardInterrupt):
             self.assertEqual(self.backend._stream(["container", "exec"]), 130)
 
-    def test_add_stops_after_failed_index_update(self) -> None:
+    def test_add_preserves_container_transaction_exit_status(self) -> None:
         with patch.object(self.backend, "_required", return_value=self.container()):
             with patch.object(self.backend, "_stream", return_value=100) as stream:
                 self.assertEqual(self.backend.add(self.state, ["ros-jazzy-demo-nodes-cpp"]), 100)
         stream.assert_called_once()
-        self.assertEqual(stream.call_args.args[0][-2:], ["apt-get", "update"])
+        self.assertEqual(stream.call_args.args[0][-2:], ["rosenv-add", "ros-jazzy-demo-nodes-cpp"])
 
     def test_invalid_resource_names_are_rejected_before_docker(self) -> None:
         for name in ("--help", "../escape", "evil;id", "name with spaces"):
@@ -264,31 +264,28 @@ class BackendTests(unittest.TestCase):
             with self.assertRaises(BackendError):
                 backend.engine_id()
 
-    def test_add_refreshes_and_upgrades_before_installing_requested_packages(self) -> None:
-        packages = ["ros-lyrical-demo-nodes-cpp", "build-essential"]
+    def test_add_passes_package_arguments_to_verified_container_without_interpolation(self) -> None:
+        packages = ["ros-lyrical-demo-nodes-cpp", "git=1:2.43.0-1ubuntu7"]
         state = {**self.state, "ros_distro": "lyrical"}
         with patch.object(self.backend, "_required", return_value=self.container()):
             with patch.object(self.backend, "_stream", return_value=0) as stream:
                 self.assertEqual(self.backend.add(state, packages), 0)
-        commands = [call.args[0] for call in stream.call_args_list]
-        apt_commands = [command[command.index("apt-get") :] for command in commands]
-        self.assertEqual([command[1] for command in apt_commands], ["update", "upgrade", "install"])
-        self.assertIn("--with-new-pkgs", apt_commands[1])
-        self.assertEqual(apt_commands[-1][-len(packages) - 1 :], ["--", *packages])
-        # Every apt operation remains inside the verified container.
-        self.assertTrue(all(command[:2] == ["container", "exec"] for command in commands))
-        self.assertTrue(all("container-id" in command for command in commands))
+        stream.assert_called_once()
+        command = stream.call_args.args[0]
+        self.assertEqual(command[:2], ["container", "exec"])
+        self.assertIn("container-id", command)
+        self.assertEqual(command[-len(packages) - 1 :], ["rosenv-add", *packages])
+        script = command[command.index("-c") + 1]
+        self.assertIn('-- "$@"', script)
+        self.assertTrue(all(package not in script for package in packages))
 
-    def test_add_upgrade_failure_prevents_install_and_preserves_failure_status(self) -> None:
-        with patch.object(self.backend, "_required", return_value=self.container()):
-            with patch.object(self.backend, "_stream", side_effect=[0, 100]) as stream:
-                self.assertEqual(self.backend.add(self.state, ["ros-jazzy-demo-nodes-cpp"]), 100)
-        commands = [call.args[0] for call in stream.call_args_list]
-        self.assertEqual(len(commands), 2)
-        self.assertEqual(
-            [command[command.index("apt-get") + 1] for command in commands], ["update", "upgrade"]
-        )
-        self.assertTrue(all("install" not in command for command in commands))
+    def test_add_rejects_shell_injection_before_container_interaction(self) -> None:
+        for package in ("git;id", "$(id)", "git\ntrue", "--help"):
+            with self.subTest(package=package):
+                with patch.object(self.backend, "ensure_running") as ensure:
+                    with self.assertRaises(BackendError):
+                        self.backend.add(self.state, [package])
+                ensure.assert_not_called()
 
 
 if __name__ == "__main__":

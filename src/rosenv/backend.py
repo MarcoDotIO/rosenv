@@ -78,7 +78,14 @@ class BackendError(Exception):
     """A container operation failed or could not be performed safely."""
 
 
-def _apt_image_script(commands: list[str]) -> str:
+_APT_UPDATE = (
+    "apt-get update --error-on=any -o Acquire::Retries=3"
+    " -o Acquire::http::No-Cache=true -o Acquire::https::No-Cache=true"
+)
+_APT_UPGRADE = "apt-get upgrade -y --with-new-pkgs --no-install-recommends -o Acquire::Retries=3"
+
+
+def _apt_transaction_script(commands: list[str]) -> str:
     """Refresh stale mirror metadata before retrying an unchanged apt transaction."""
     # A mirror can replace a .deb between index refresh and download. Retrying
     # the download alone cannot repair that race. Discard local lists, bypass
@@ -492,14 +499,9 @@ class DockerBackend:
             base_digest = next(
                 (digest for digest in digests if digest.split("@", 1)[0] == repository), digests[0]
             )
-        apt = [
-            "apt-get update --error-on=any -o Acquire::Retries=3"
-            " -o Acquire::http::No-Cache=true -o Acquire::https::No-Cache=true"
-        ]
+        apt = [_APT_UPDATE]
         if locked is None:
-            apt.append(
-                "apt-get upgrade -y --with-new-pkgs --no-install-recommends -o Acquire::Retries=3"
-            )
+            apt.append(_APT_UPGRADE)
             specifications = sorted(set(packages))
             install_options = ""
         else:
@@ -529,7 +531,7 @@ class DockerBackend:
                 [
                     "/bin/sh",
                     "-c",
-                    _apt_image_script(apt),
+                    _apt_transaction_script(apt),
                 ]
             )
             + "\n"
@@ -869,29 +871,30 @@ class DockerBackend:
         # ROS repositories are synchronized independently of Docker image builds.
         # Updating only a newly requested package can mix incompatible ROS ABIs.
         # Match the upstream apt-upgrade prerequisite inside this container only.
-        for command in (
-            ["apt-get", "update"],
-            ["apt-get", "upgrade", "-y", "--with-new-pkgs", "--no-install-recommends"],
-            ["apt-get", "install", "-y", "--no-install-recommends", "--", *packages],
-        ):
-            info = self._required(state)
-            status = self._stream(
-                [
-                    "container",
-                    "exec",
-                    "--user",
-                    "0:0",
-                    "--env",
-                    "HOME=/root",
-                    "--env",
-                    "DEBIAN_FRONTEND=noninteractive",
-                    info["Id"],
-                    *command,
-                ]
-            )
-            if status:
-                return status
-        return 0
+        script = _apt_transaction_script(
+            [
+                _APT_UPDATE,
+                _APT_UPGRADE,
+                'apt-get install -y --no-install-recommends -o Acquire::Retries=3 -- "$@"',
+            ]
+        )
+        info = self._required(state)
+        return self._stream(
+            [
+                "container",
+                "exec",
+                "--user",
+                "0:0",
+                "--env",
+                "HOME=/root",
+                info["Id"],
+                "/bin/sh",
+                "-c",
+                script,
+                "rosenv-add",
+                *packages,
+            ]
+        )
 
     def stop(self, state: dict[str, Any]) -> None:
         """Stop an owned container without deleting its packages or mounts."""

@@ -266,6 +266,61 @@ sys.exit(status)
                         ],
                     )
 
+    def run_legacy_add(self, failures):
+        packages = ["ros-jazzy-demo-nodes-cpp", "git=1:2.43.0-1ubuntu7"]
+        captured = {}
+
+        def execute(argv):
+            command = argv[argv.index("/bin/sh") :]
+            captured["result"], captured["events"] = self.run_apt_script(
+                "RUN " + json.dumps(command), failures
+            )
+            return captured["result"].returncode
+
+        with (
+            patch.object(self.backend, "ensure_running"),
+            patch.object(self.backend, "_required", return_value={"Id": "owned"}),
+            patch.object(self.backend, "_stream", side_effect=execute),
+        ):
+            captured["status"] = self.backend.add({}, packages)
+        captured["packages"] = packages
+        return captured
+
+    def test_legacy_add_recovers_from_each_apt_stage_and_retains_package_argv(self):
+        for stage in ("update", "upgrade", "install"):
+            with self.subTest(stage=stage):
+                run = self.run_legacy_add({stage: [100]})
+                self.assertEqual(run["status"], 0, run["result"].stderr)
+                operations = [event["operation"] for event in run["events"]]
+                self.assertEqual(operations.count("update"), 2)
+                self.assertEqual(
+                    operations[operations.index("sleep") + 1 :],
+                    ["rm", "update", "upgrade", "install", "rm"],
+                )
+                for event in run["events"]:
+                    if event["operation"] == "install":
+                        self.assertEqual(
+                            event["argv"][event["argv"].index("--") + 1 :], run["packages"]
+                        )
+
+    def test_legacy_add_exhaustion_never_continues_after_failed_prerequisite(self):
+        for stage in ("update", "upgrade"):
+            with self.subTest(stage=stage):
+                run = self.run_legacy_add({stage: [100] * 4})
+                self.assertEqual(run["status"], 100)
+                operations = [event["operation"] for event in run["events"]]
+                self.assertEqual(operations.count(stage), 3)
+                self.assertNotIn("install", operations)
+                if stage == "update":
+                    self.assertNotIn("upgrade", operations)
+
+    def test_legacy_add_interruption_does_not_retry_or_install(self):
+        run = self.run_legacy_add({"upgrade": [130]})
+        self.assertEqual(run["status"], 130)
+        self.assertEqual(
+            [event["operation"] for event in run["events"]], ["rm", "update", "upgrade"]
+        )
+
     def test_frozen_build_requires_digest_before_touching_docker(self):
         with patch.object(self.backend, "resolve_image") as resolve:
             with self.assertRaisesRegex(BackendError, "pinned base image digest"):
