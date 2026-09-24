@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -157,6 +159,112 @@ class ProjectBackendTests(unittest.TestCase):
     def test_frozen_build_failure_has_no_unlocked_fallback(self):
         with self.assertRaisesRegex(BackendError, "no unlocked fallback"):
             self.prepare(locked=INVENTORY, status=100)
+
+    @staticmethod
+    def run_apt_script(recipe, failures):
+        """Execute the real generated shell, substituting side-effect-free commands."""
+        run_line = next(line for line in recipe.splitlines() if line.startswith("RUN "))
+        command = json.loads(run_line[4:])
+        with tempfile.TemporaryDirectory(prefix="rosenv-apt-test-") as temporary:
+            directory = Path(temporary)
+            trace = directory / "trace.json"
+            trace.write_text("[]")
+            executable = (
+                f"#!{sys.executable}\n"
+                + """
+import json
+import os
+import sys
+from pathlib import Path
+
+trace = Path(os.environ["ROSENV_TEST_TRACE"])
+events = json.loads(trace.read_text())
+tool = Path(sys.argv[0]).name
+operation = sys.argv[1] if tool == "apt-get" else tool
+previous = sum(event["operation"] == operation for event in events)
+events.append({"operation": operation, "argv": sys.argv[1:]})
+trace.write_text(json.dumps(events))
+statuses = json.loads(os.environ["ROSENV_TEST_FAILURES"]).get(operation, [])
+status = statuses[previous] if previous < len(statuses) else 0
+if status:
+    print("simulated " + operation + " failure", file=sys.stderr)
+sys.exit(status)
+"""
+            )
+            for name in ("apt-get", "rm", "sleep"):
+                stub = directory / name
+                stub.write_text(executable)
+                stub.chmod(0o700)
+            result = subprocess.run(
+                command,
+                env={
+                    **os.environ,
+                    "PATH": str(directory),
+                    "ROSENV_TEST_TRACE": str(trace),
+                    "ROSENV_TEST_FAILURES": json.dumps(failures),
+                },
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            return result, json.loads(trace.read_text())
+
+    def test_apt_refreshes_metadata_before_retrying_each_failed_stage(self):
+        recipe = self.prepare()["recipe"]
+        for stage in ("update", "upgrade", "install"):
+            with self.subTest(stage=stage):
+                result, events = self.run_apt_script(recipe, {stage: [100]})
+                self.assertEqual(result.returncode, 0, result.stderr)
+                operations = [event["operation"] for event in events]
+                pause = operations.index("sleep")
+                self.assertEqual(
+                    operations[pause + 1 :], ["rm", "update", "upgrade", "install", "rm"]
+                )
+                self.assertEqual(operations.count("update"), 2)
+                self.assertIn("simulated " + stage + " failure", result.stderr)
+                self.assertIn("refreshing package indexes", result.stderr)
+                for event in events:
+                    if event["operation"] == "update":
+                        self.assertIn("--error-on=any", event["argv"])
+                        self.assertIn("Acquire::http::No-Cache=true", event["argv"])
+                        self.assertIn("Acquire::https::No-Cache=true", event["argv"])
+
+    def test_apt_persistent_failure_is_bounded_and_does_not_install(self):
+        result, events = self.run_apt_script(self.prepare()["recipe"], {"upgrade": [100] * 4})
+        self.assertEqual(result.returncode, 100)
+        operations = [event["operation"] for event in events]
+        self.assertEqual(operations.count("update"), 3)
+        self.assertEqual(operations.count("upgrade"), 3)
+        self.assertNotIn("install", operations)
+        self.assertEqual(
+            [event["argv"] for event in events if event["operation"] == "sleep"], [["5"], ["10"]]
+        )
+        self.assertEqual(result.stderr.count("simulated upgrade failure"), 3)
+
+    def test_apt_interruption_is_not_retried(self):
+        result, events = self.run_apt_script(self.prepare()["recipe"], {"upgrade": [130]})
+        self.assertEqual(result.returncode, 130)
+        self.assertEqual([event["operation"] for event in events], ["rm", "update", "upgrade"])
+
+    def test_frozen_retry_never_changes_exact_versions_or_upgrades(self):
+        recipe = self.prepare(locked=INVENTORY)["recipe"]
+        for failures, expected_status, attempts in (([100], 0, 2), ([100] * 4, 100, 3)):
+            with self.subTest(failures=failures):
+                result, events = self.run_apt_script(recipe, {"install": failures})
+                self.assertEqual(result.returncode, expected_status, result.stderr)
+                self.assertNotIn("upgrade", [event["operation"] for event in events])
+                installs = [event["argv"] for event in events if event["operation"] == "install"]
+                self.assertEqual(len(installs), attempts)
+                for command in installs:
+                    self.assertIn("--allow-downgrades", command)
+                    self.assertEqual(
+                        command[command.index("--") + 1 :],
+                        [
+                            "base-files:amd64=13ubuntu10.3",
+                            "ros-jazzy-demo-nodes-cpp:amd64=0.33.5-1noble",
+                            "ros-workspace=1.0.3-1",
+                        ],
+                    )
 
     def test_frozen_build_requires_digest_before_touching_docker(self):
         with patch.object(self.backend, "resolve_image") as resolve:

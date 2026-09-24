@@ -78,6 +78,34 @@ class BackendError(Exception):
     """A container operation failed or could not be performed safely."""
 
 
+def _apt_image_script(commands: list[str]) -> str:
+    """Refresh stale mirror metadata before retrying an unchanged apt transaction."""
+    # A mirror can replace a .deb between index refresh and download. Retrying
+    # the download alone cannot repair that race. Discard local lists, bypass
+    # intermediary caches, and refresh them on each attempt. Frozen commands
+    # retain every exact version; an unavailable version still fails explicitly.
+    return (
+        "set -eu\n"
+        "export DEBIAN_FRONTEND=noninteractive\n"
+        "rosenv_attempt=1\n"
+        "while :; do\n"
+        "    if rm -rf /var/lib/apt/lists/* && " + " && ".join(commands) + "; then\n"
+        "        rm -rf /var/lib/apt/lists/*\n"
+        "        exit 0\n"
+        "    else\n"
+        "        rosenv_status=$?\n"
+        "    fi\n"
+        '    if [ "$rosenv_status" -ne 100 ] || [ "$rosenv_attempt" -ge 3 ]; then\n'
+        '        exit "$rosenv_status"\n'
+        "    fi\n"
+        '    echo "rosenv: apt attempt $rosenv_attempt failed; refreshing package '
+        'indexes before retrying." >&2\n'
+        '    sleep "$((rosenv_attempt * 5))"\n'
+        "    rosenv_attempt=$((rosenv_attempt + 1))\n"
+        "done\n"
+    )
+
+
 class DockerBackend:
     """Manage persistent containers using the locally configured Docker engine."""
 
@@ -464,9 +492,14 @@ class DockerBackend:
             base_digest = next(
                 (digest for digest in digests if digest.split("@", 1)[0] == repository), digests[0]
             )
-        apt = ["apt-get update"]
+        apt = [
+            "apt-get update --error-on=any -o Acquire::Retries=3"
+            " -o Acquire::http::No-Cache=true -o Acquire::https::No-Cache=true"
+        ]
         if locked is None:
-            apt.append("apt-get upgrade -y --with-new-pkgs --no-install-recommends")
+            apt.append(
+                "apt-get upgrade -y --with-new-pkgs --no-install-recommends -o Acquire::Retries=3"
+            )
             specifications = sorted(set(packages))
             install_options = ""
         else:
@@ -482,10 +515,10 @@ class DockerBackend:
             apt.append(
                 "apt-get install -y --no-install-recommends"
                 + install_options
+                + " -o Acquire::Retries=3"
                 + " -- "
                 + " ".join(shlex.quote(package) for package in specifications)
             )
-        apt.append("rm -rf /var/lib/apt/lists/*")
         # JSON RUN prevents Dockerfile interpretation of package characters.
         # Shell arguments are separately validated and quoted above.
         recipe = (
@@ -496,7 +529,7 @@ class DockerBackend:
                 [
                     "/bin/sh",
                     "-c",
-                    "DEBIAN_FRONTEND=noninteractive; export DEBIAN_FRONTEND; " + " && ".join(apt),
+                    _apt_image_script(apt),
                 ]
             )
             + "\n"
