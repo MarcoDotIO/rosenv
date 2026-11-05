@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.0 — Unreleased
+## 0.2.0 — 2026-11-05
 
 - Separate runtime configuration from dependency locks; network/domain edits no longer refresh packages or rebuild images. Read existing schema 1 locks and migrate to dependency-only schema 2 without re-resolving.
 - Add TOML command variables and repeatable `--set-env` overrides for execution commands.
