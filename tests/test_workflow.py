@@ -17,6 +17,7 @@ from rosenv.workflow import (
     existing_project_environment,
     export_lock,
     lock_project,
+    plan_sync,
     read_lock,
     sync_project,
 )
@@ -161,7 +162,7 @@ class WorkflowTests(unittest.TestCase):
             self.sync(frozen=True)
         self.assertEqual(self.backend.calls, [])
 
-    def test_frozen_uses_locked_runtime_settings_after_manifest_edit(self):
+    def test_frozen_v2_uses_manifest_runtime_settings_after_edit(self):
         self.project.network = "none"
         self.project.domain_id = 42
         self.project.save()
@@ -170,8 +171,8 @@ class WorkflowTests(unittest.TestCase):
         self.project.domain_id = 57
         self.project.save()
         state = self.sync(frozen=True)
-        self.assertEqual(state["network"], "none")
-        self.assertEqual(state["domain_id"], 42)
+        self.assertEqual(state["network"], "host")
+        self.assertEqual(state["domain_id"], 57)
 
     def test_matching_inventory_reuses_container_and_does_not_rebuild(self):
         first = self.sync()
@@ -183,6 +184,170 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(
             [call[0] for call in self.backend.calls], ["inspect", "ensure_running", "inventory"]
         )
+
+    def test_runtime_variables_and_domain_reuse_container_and_leave_lock_untouched(self):
+        first = self.sync()
+        original_lock = self.project.lock_path.read_bytes()
+        self.project.domain_id = 51
+        self.project.variables = {"RMW_IMPLEMENTATION": "rmw_fastrtps_cpp"}
+        self.project.save()
+        self.backend.calls.clear()
+        second = self.sync(locked=True)
+        self.assertEqual(second["container"], first["container"])
+        self.assertEqual(second["domain_id"], 51)
+        self.assertEqual(self.project.lock_path.read_bytes(), original_lock)
+        self.assertFalse(any(c[0] in {"prepare", "create", "remove"} for c in self.backend.calls))
+        self.assertNotIn("variables", second)
+
+    def test_network_change_replaces_only_container_and_preserves_lock_and_home(self):
+        first = self.sync()
+        original_lock = self.project.lock_path.read_bytes()
+        Path(first["home"], "keep").write_text("saved")
+        self.project.network = "host"
+        self.project.save()
+        self.backend.calls.clear()
+        second = self.sync(locked=True)
+        self.assertNotEqual(second["container"], first["container"])
+        self.assertEqual(second["image_id"], first["image_id"])
+        self.assertEqual(second["network"], "host")
+        self.assertEqual(Path(second["home"], "keep").read_text(), "saved")
+        self.assertEqual(self.project.lock_path.read_bytes(), original_lock)
+        self.assertFalse(any(c[0] == "prepare" for c in self.backend.calls))
+
+    def test_device_identity_change_replaces_container_without_resolving_packages(self):
+        self.project.devices = ["/dev/null:/dev/probe:rw"]
+        self.project.save()
+        first = self.sync()
+        changed = copy.deepcopy(first["devices"])
+        changed[0]["inode"] += 1
+        self.backend.calls.clear()
+        with patch("rosenv.workflow.resolve_devices", return_value=changed):
+            second = self.sync(locked=True)
+        self.assertNotEqual(first["container"], second["container"])
+        self.assertEqual(second["devices"], changed)
+        self.assertFalse(any(c[0] == "prepare" for c in self.backend.calls))
+
+    def test_missing_device_fails_before_resolving_or_mutating_registry(self):
+        self.project.devices = ["/dev/rosenv-missing-test-device"]
+        self.project.save()
+        with self.assertRaisesRegex(ProjectError, "Connect it"):
+            self.sync()
+        self.assertEqual(self.backend.calls, [])
+        self.assertFalse(self.project.lock_path.exists())
+        self.assertFalse(self.store.root.exists())
+
+    def legacy_lock(self):
+        lock = self.lock()
+        lock["schema"] = 1
+        lock["environment"] = {"network": "none", "domain_id": 42}
+        # Legacy fingerprints contained runtime settings; freshness now uses package intent.
+        lock["fingerprint"] = "d" * 64
+        self.project.lock_path.write_text(json.dumps(lock))
+        return lock
+
+    def test_legacy_lock_migrates_without_build_and_locked_checks_do_not_write(self):
+        legacy = self.legacy_lock()
+        before = self.project.lock_path.read_bytes()
+        self.backend.calls.clear()
+        checked = lock_project(self.project, self.backend, check=True)
+        self.assertEqual(checked, legacy)
+        self.assertEqual(self.project.lock_path.read_bytes(), before)
+        migrated = self.lock()
+        self.assertEqual(migrated["schema"], 2)
+        self.assertNotIn("environment", migrated)
+        self.assertEqual(migrated["packages"], legacy["packages"])
+        self.assertEqual(migrated["image_id"], legacy["image_id"])
+        self.assertEqual(self.backend.calls, [])
+
+    def test_legacy_frozen_preserves_locked_runtime_but_locked_uses_manifest(self):
+        self.legacy_lock()
+        original = self.project.lock_path.read_bytes()
+        self.project.network = "host"
+        self.project.domain_id = 57
+        self.project.save()
+        frozen = self.sync(frozen=True)
+        self.assertEqual((frozen["network"], frozen["domain_id"]), ("none", 42))
+        locked = self.sync(locked=True)
+        self.assertEqual((locked["network"], locked["domain_id"]), ("host", 57))
+        self.assertEqual(self.project.lock_path.read_bytes(), original)
+
+    def test_legacy_receipt_reuses_container_after_lock_migration(self):
+        first = self.sync()
+        first.pop("package_signature")
+        first.pop("container_signature")
+        self.store.save(first)
+        self.legacy_lock()
+        second = self.sync()
+        self.assertEqual(first["container"], second["container"])
+        self.assertEqual(read_lock(self.project)["schema"], 2)
+
+    def test_lock_metadata_change_does_not_replace_container(self):
+        first = self.sync()
+        lock = read_lock(self.project)
+        lock["created_at"] = "different-timestamp"
+        lock["generator"] = "different-generator"
+        self.project.lock_path.write_text(json.dumps(lock))
+        second = self.sync(locked=True)
+        self.assertEqual(first["container"], second["container"])
+
+    def test_runtime_replacement_reuses_reconstructed_image_with_different_id(self):
+        first = self.sync()
+        reconstructed_id = "sha256:" + "e" * 64
+        first["image_id"] = reconstructed_id
+        self.store.save(first)
+        self.project.network = "host"
+        self.project.save()
+        self.backend.calls.clear()
+        with patch.object(
+            self.backend,
+            "image_info",
+            side_effect=lambda image_id: (
+                {**self.backend.image, "id": reconstructed_id}
+                if image_id == reconstructed_id
+                else None
+            ),
+        ):
+            second = self.sync(locked=True)
+        self.assertNotEqual(first["container"], second["container"])
+        self.assertEqual(second["image_id"], reconstructed_id)
+        self.assertFalse(any(c[0] == "prepare" for c in self.backend.calls))
+
+    def test_changed_request_with_same_inventory_updates_receipt_without_replacement(self):
+        first = self.sync()
+        self.project.add_dependencies(["apt:bash"])
+        second = self.sync()
+        self.assertEqual(first["container"], second["container"])
+        self.assertEqual(second["requested_packages"], ["bash"])
+
+    def test_alternate_manifests_have_independent_locks_and_environments(self):
+        self.sync()
+        original = self.project.lock_path.read_bytes()
+        alternate = initialize(self.project.root, "robot", manifest_name="rosenv.robot.toml")
+        alternate.dependencies = ["rclpy"]
+        alternate.save()
+        state = sync_project(alternate, self.store, self.backend)
+        self.assertEqual(state["requested_packages"], ["ros-jazzy-rclpy"])
+        self.assertNotEqual(environment_name(alternate), environment_name(self.project))
+        self.assertEqual(self.project.lock_path.read_bytes(), original)
+        self.assertTrue(alternate.lock_path.exists())
+        self.assertEqual(len(self.store.list()), 2)
+
+    def test_dry_run_does_not_start_write_or_resolve(self):
+        self.assertIn("Resolve dependencies", plan_sync(self.project, self.store, self.backend))
+        self.assertFalse(self.store.root.exists())
+        self.assertFalse(self.project.lock_path.exists())
+        self.assertEqual(self.backend.calls, [])
+        state = self.sync()
+        receipt = self.store.path(state["name"]).read_bytes()
+        lock = self.project.lock_path.read_bytes()
+        self.backend.calls.clear()
+        self.assertIn("Reuse container", plan_sync(self.project, self.store, self.backend))
+        self.assertEqual([c[0] for c in self.backend.calls], ["inspect"])
+        self.project.network = "host"
+        self.project.save()
+        self.assertIn("network changed", plan_sync(self.project, self.store, self.backend))
+        self.assertEqual(self.store.path(state["name"]).read_bytes(), receipt)
+        self.assertEqual(self.project.lock_path.read_bytes(), lock)
 
     def test_package_drift_replaces_container_preserving_private_home(self):
         first = self.sync()
@@ -371,14 +536,14 @@ class WorkflowTests(unittest.TestCase):
         valid = self.lock()
         variants = [
             {"schema": True},
-            {"schema": 2},
+            {"schema": 3},
             {"ros": "unknown"},
             {"variant": "unknown"},
             {"groups": "dev"},
             {"groups": ["../escape"]},
-            {"environment": {"network": "public", "domain_id": None}},
-            {"environment": {"network": "bridge", "domain_id": True}},
-            {"environment": {"network": "bridge", "domain_id": 233}},
+            {"schema": 1, "environment": {"network": "public", "domain_id": None}},
+            {"schema": 1, "environment": {"network": "bridge", "domain_id": True}},
+            {"schema": 1, "environment": {"network": "bridge", "domain_id": 233}},
             {"fingerprint": "a" * 63},
             {"image_id": "ros:latest"},
             {"base_id": "sha256:not-hex"},

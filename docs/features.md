@@ -15,6 +15,10 @@ rosenv manages ROS distributions and Debian package dependencies in persistent D
 | Frozen synchronization | `rosenv sync --frozen` | Uses the existing lock without checking whether the manifest has changed. |
 | Command execution | `rosenv run`, `rosenv shell` | Synchronizes the project and sources ROS plus any built workspace overlay. `--no-sync` uses the existing environment. |
 | Build and test | `rosenv build`, `rosenv test` | Runs colcon in the environment. Testing also checks colcon's recorded test results. |
+| Runtime variables | `[environment.variables]`, `--set-env NAME=VALUE` | Applies to new commands without rebuilding or replacing the container; CLI overrides TOML. |
+| Device access | `[environment].devices` | Maps individual Linux device nodes and their numeric groups; changed device identities require container replacement, not package resolution. |
+| Alternate configurations | `--config FILE.toml` | Uses a complete manifest with its own sibling lockfile and environment. |
+| Sync preview | `rosenv sync --dry-run` | Explains configuration-driven changes without writes or starting containers; inventory checking waits for actual sync. |
 | Tasks | `[tasks]`, `rosenv task` | Runs named argument arrays. Shell expansion requires an explicitly invoked shell. |
 | Package inspection | `rosenv tree` | Lists direct locked dependencies; `--all` includes the full installed inventory. Output does not include dependency graph edges. |
 | Export | `rosenv export` | Exports a JSON lock, exact apt package requirements, or a Dockerfile. |
@@ -23,7 +27,7 @@ rosenv manages ROS distributions and Debian package dependencies in persistent D
 
 Named environments can be managed independently with `rosenv env create`, `list`, `show`, `stop`, and `remove`. `rosenv local` selects an environment for a directory; `rosenv global` sets the default. Selection applies to rosenv commands and does not modify the host shell's `PATH`.
 
-Project synchronization replaces a container when the lock changes or its installed package inventory drifts. The host workspace and private home persist across replacement. Deleting an environment removes its managed private home after confirmation; it preserves the host workspace.
+Project synchronization replaces a container when its locked package identity, network, or mapped devices change, or its installed package inventory drifts. Command variables, domain IDs, task edits, and lock metadata changes do not require replacement. The host workspace and private home persist across replacement. Deleting an environment removes its managed private home after confirmation; it preserves the host workspace.
 
 `rosenv cache list` and `rosenv cache clean` inspect and remove prepared images owned by the current user. Cleanup does not force removal of images used by containers or prune unrelated Docker resources.
 

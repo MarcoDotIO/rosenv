@@ -18,6 +18,7 @@
 - **Distribution isolation.** Run Humble and Jazzy in separate environments on the same Ubuntu 24.04 host.
 - **Declarative dependencies.** `rosenv.toml` declares ROS and Ubuntu packages; `rosenv.lock` records the resolved package inventory and base image.
 - **Workspace execution.** `rosenv run`, `build`, and `test` enter the environment and source ROS plus your workspace overlay.
+- **Runtime configuration.** Try command variables with `--set-env`, save defaults in TOML, and map Linux devices without rebuilding dependency images. Select alternate manifests with `--config` and preview changes with `sync --dry-run`.
 - **Persistent storage.** The workspace is mounted from the host. Container replacement preserves the project workspace and private home.
 
 rosenv manages ROS userspace with Docker. It does not install ROS into the host operating system or promise isolation from hostile code.
@@ -125,7 +126,7 @@ Jazzy is the default. `ros-core`, `ros-base`, and `perception` select official i
 
 Default networking uses a dedicated Docker bridge and an allocated `ROS_DOMAIN_ID`. Host networking is opt-in for LAN discovery. Normal commands run with your host UID/GID; package management runs as root inside the container. Your mounted workspace and private home are writable, and files inside them are visible to container commands.
 
-A lock describes one architecture and selected dependency-group profile. Source overlays, arbitrary shell changes, host devices, and robot behavior are outside its package guarantee. This release does not provide GUI/GPU/USB passthrough, a native macOS/Windows backend, or automatic host-shell activation. [Architecture and isolation](docs/architecture.md) explains the details.
+A lock describes one architecture and selected dependency-group profile. Source overlays, arbitrary shell changes, host devices, and robot behavior are outside its package guarantee. Individual Linux devices can be mapped explicitly; see [device access](docs/guide.md#usb-and-other-device-access). This release does not provide GUI/GPU passthrough, a native macOS/Windows backend, or automatic host-shell activation. [Architecture and isolation](docs/architecture.md) explains the details.
 
 ## Development
 

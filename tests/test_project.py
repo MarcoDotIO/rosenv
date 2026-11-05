@@ -243,7 +243,7 @@ class ProjectTests(unittest.TestCase):
         self.assertEqual(project.fingerprint(), before)
         self.assertRegex(before, r"^[0-9a-f]{64}$")
 
-    def test_fingerprint_changes_for_effective_dependencies_group_profile_and_runtime(self) -> None:
+    def test_fingerprint_changes_for_effective_dependencies_and_group_profile(self) -> None:
         original = Project(self.root, "robot", groups={"dev": [], "empty": []})
         baseline = original.fingerprint()
         self.assertNotEqual(original.fingerprint(no_dev=True), baseline)
@@ -252,8 +252,6 @@ class ProjectTests(unittest.TestCase):
             {"distro": "humble"},
             {"variant": "perception"},
             {"dependencies": ["rclpy"]},
-            {"network": "none"},
-            {"domain_id": 3},
         ):
             with self.subTest(changes=changes):
                 changed = Project(self.root, "robot", groups={"dev": [], "empty": []}, **changes)

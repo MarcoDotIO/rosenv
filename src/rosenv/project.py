@@ -20,6 +20,7 @@ from typing import Any
 import tomlkit
 
 from .catalog import DISTROS
+from .runtime import validate_devices, validate_variables
 from .state import StateError, atomic_write, validate_name
 
 MANIFEST = "rosenv.toml"
@@ -161,6 +162,9 @@ class Project:
     tasks: dict[str, list[str]] = field(default_factory=dict)
     network: str = "bridge"
     domain_id: int | None = None
+    variables: dict[str, str] = field(default_factory=dict)
+    devices: list[str] = field(default_factory=list)
+    manifest_name: str = MANIFEST
     _source: str | None = field(default=None, repr=False, compare=False)
     _saved: dict[str, Any] = field(default_factory=dict, repr=False, compare=False)
 
@@ -170,12 +174,28 @@ class Project:
 
     @property
     def path(self) -> Path:
-        return self.root / MANIFEST
+        return self.root / self.manifest_name
+
+    @property
+    def lock_path(self) -> Path:
+        return self.path.with_suffix(".lock")
 
     def edit_lock(self):
         return project_lock(self.root)
 
     def _validate(self) -> None:
+        if (
+            not isinstance(self.manifest_name, str)
+            or Path(self.manifest_name).name != self.manifest_name
+            or not self.manifest_name.endswith(".toml")
+            or self.manifest_name == ".toml"
+        ):
+            raise ProjectError("Configuration must be a named .toml file.")
+        try:
+            validate_variables(self.variables)
+            validate_devices(self.devices)
+        except ValueError as exc:
+            raise ProjectError(str(exc)) from None
         _name(self.name, "project name")
         if not isinstance(self.distro, str) or self.distro not in DISTROS:
             raise ProjectError(f"Unknown ROS distribution: {self.distro!r}.")
@@ -227,6 +247,8 @@ class Project:
             "tasks": {name: list(values) for name, values in self.tasks.items()},
             "network": self.network,
             "domain_id": self.domain_id,
+            "variables": dict(self.variables),
+            "devices": list(self.devices),
         }
 
     def to_dict(self) -> dict[str, Any]:
@@ -260,13 +282,11 @@ class Project:
 
     def fingerprint(self, groups: Sequence[str] | None = None, no_dev: bool = False) -> str:
         spec = {
-            "schema": 1,
+            "schema": 2,
             "distro": self.distro,
             "variant": self.variant,
             "dependencies": self.effective_dependencies(groups, no_dev),
             "groups": self.selected_groups(groups, no_dev),
-            "network": self.network,
-            "domain_id": self.domain_id,
         }
         return hashlib.sha256(
             json.dumps(spec, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -305,6 +325,22 @@ class Project:
                 if "environment" not in document:
                     document["environment"] = tomlkit.table()
                 document["environment"][key] = value
+        if self._saved.get("devices", []) != self.devices:
+            if "environment" not in document:
+                document["environment"] = tomlkit.table()
+            _array_update(document["environment"], "devices", self.devices)
+        if self._saved.get("variables", {}) != self.variables:
+            if "environment" not in document:
+                document["environment"] = tomlkit.table()
+            if "variables" not in document["environment"]:
+                document["environment"]["variables"] = tomlkit.table()
+            table = document["environment"]["variables"]
+            for key in list(table):
+                if key not in self.variables:
+                    del table[key]
+            for key, value in self.variables.items():
+                if table.get(key) != value:
+                    table[key] = value
         return tomlkit.dumps(document)
 
     def save(self) -> Project:
@@ -429,8 +465,9 @@ def _write_new(path: Path, text: str) -> None:
 
 
 def load(root: Path | str) -> Project:
-    directory = Path(root).expanduser().resolve()
-    path = directory / MANIFEST
+    location = Path(root).expanduser().resolve()
+    path = location / MANIFEST if location.is_dir() else location
+    directory = path.parent
     try:
         text = path.read_text(encoding="utf-8")
         data = tomllib.loads(text)
@@ -441,7 +478,7 @@ def load(root: Path | str) -> Project:
         for key in ("name", "ros"):
             if key not in metadata:
                 raise ProjectError(f"[project] requires {key!r}.")
-        environment = _table(data, "environment", {"network", "domain-id"})
+        environment = _table(data, "environment", {"network", "domain-id", "variables", "devices"})
         result = Project(
             root=directory,
             name=metadata["name"],
@@ -452,6 +489,9 @@ def load(root: Path | str) -> Project:
             tasks=_table(data, "tasks"),
             network=environment.get("network", "bridge"),
             domain_id=environment.get("domain-id"),
+            variables=environment.get("variables", {}),
+            devices=environment.get("devices", []),
+            manifest_name=path.name,
         )
         result._source, result._saved = text, result._spec()
         return result
@@ -477,6 +517,8 @@ def initialize(
     variant: str = "ros-base",
     network: str = "bridge",
     domain_id: int | None = None,
+    *,
+    manifest_name: str = MANIFEST,
 ) -> Project:
     project = Project(
         root=Path(root),
@@ -485,6 +527,7 @@ def initialize(
         variant=variant,
         network=network,
         domain_id=domain_id,
+        manifest_name=manifest_name,
     )
     with project.edit_lock():
         if project.path.exists() or project.path.is_symlink():

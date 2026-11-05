@@ -17,6 +17,17 @@ rosenv init --ros jazzy
 
 Project commands discover the nearest `rosenv.toml` in the current directory or its parents. `rosenv -C ~/robot_ws sync` selects a directory explicitly. Put this global option before the subcommand.
 
+Use `--config` before the subcommand to select another complete manifest:
+
+```bash
+rosenv --config rosenv.robot.toml init --ros jazzy
+rosenv --config rosenv.robot.toml add rclpy
+rosenv --config rosenv.robot.toml sync --locked
+rosenv --config rosenv.robot.toml run -- ros2 topic list
+```
+
+Each manifest has a sibling lockfile (`rosenv.robot.lock` here) and its own container and private home. The directory containing the manifest is the mounted workspace root, so keep alternate manifests at the workspace root. Configurations do not inherit or merge settings. They can share cached images, but changing one manifest does not edit another's lock. Containers using the same workspace share source and build outputs; avoid concurrent builds or incompatible overlays. `-C` is applied before resolving a relative `--config` path. An explicitly missing configuration is an error; rosenv never falls back to the default. `--config` cannot be combined with named-environment selection.
+
 ## Declare dependencies
 
 ```bash
@@ -54,6 +65,9 @@ tools = ["apt:curl"]
 network = "bridge"
 domain-id = 42
 
+[environment.variables]
+RMW_IMPLEMENTATION = "rmw_fastrtps_cpp"
+
 [tasks]
 talker = ["ros2", "run", "demo_nodes_cpp", "talker"]
 listener = ["ros2", "run", "demo_nodes_cpp", "listener"]
@@ -71,6 +85,50 @@ rosenv sync --no-dev
 
 **Each lock records one group selection.** Switching from the default profile to `--no-dev` or a different group selection requires a new lock. Use identical group flags when checking or syncing a committed lock. For example, `rosenv lock --no-dev` pairs with `rosenv sync --locked --no-dev`. This is not a universal lock containing every possible profile.
 
+## Experiment with runtime settings
+
+Try variables on a single invocation before saving defaults:
+
+```bash
+rosenv run --set-env ROS_DOMAIN_ID=51 -- ros2 topic list
+rosenv run --set-env RMW_IMPLEMENTATION=rmw_fastrtps_cpp -- ros2 topic list
+rosenv shell --set-env ROBOT_NAME=prototype
+```
+
+`--set-env NAME=VALUE` is repeatable and works with `run`, `shell`, `build`, `test`, and task execution. Put flags before the task name or `--` separator. Values are literal strings, including spaces, equals signs, and empty strings; quote them for your host shell as needed. The last flag for a name wins. `--env`/`-e` continues to select a named rosenv environment; it does not set variables.
+
+When a value works, save `domain-id = 51` in `[environment]` or other defaults in `[environment.variables]`. **No image rebuild is needed.** The next rosenv command receives the new values, including with `--locked`. Precedence is allocated/configured domain ID, then TOML variables, then CLI overrides. `HOME` and `ROS_DISTRO` are managed by rosenv and cannot be overridden; `ROS_DOMAIN_ID` must be 0–232. Variables are supplied to the command's environment before ROS and workspace setup scripts run; those scripts may modify variables such as `PATH` or `PYTHONPATH`.
+
+Variables are not baked into images or recorded in the package lock or registry. CLI overrides do not edit TOML. Existing processes keep their environment; restart nodes to apply changes. With `--no-sync`, current variables and an explicit `domain-id` still apply, but network/device/package changes wait for a sync. Arbitrary host variables are not automatically forwarded. Install the corresponding middleware package before selecting it with `RMW_IMPLEMENTATION`.
+
+| Change | Effect on the next sync/run |
+| --- | --- |
+| Variables, domain ID, tasks | Reuse the container; apply to new commands |
+| Network or mapped devices | Replace the container using the locked image; preserve workspace and private home |
+| Dependencies, ROS distro, image variant, dependency profile | Resolve a changed package lock, unless `--locked` rejects it |
+
+```bash
+rosenv sync --dry-run
+rosenv sync --locked --dry-run
+```
+
+The preview explains reuse, replacement, missing images, or dependency resolution without writing files, building images, starting containers, or running commands inside them. It reads Docker metadata when a current lock exists. Package-inventory verification is deferred to actual sync, so reported reuse is conditional on the inventory matching.
+
+## USB and other device access
+
+Declare individual Linux device nodes in `[environment]`:
+
+```toml
+[environment]
+devices = ["/dev/serial/by-id/YOUR_DEVICE:/dev/ttyACM0:rw"]
+```
+
+Mappings use `HOST[:CONTAINER[:PERMISSIONS]]`. Both paths must be under `/dev`; the container path defaults to the host path, and permissions default to `rw`. Use stable `/dev/serial/by-id/` names on the host and a simple path such as `/dev/ttyACM0` inside the container. The host path must resolve to a character or block device. A missing device fails sync before image preparation or container replacement.
+
+rosenv maps only the requested devices and adds their numeric host group IDs to the container user's supplementary groups. Commands continue to run as your host UID/GID. This requires neither a privileged container nor making the device world-writable. Device declarations are runtime settings and do not invalidate the dependency lock.
+
+After unplugging/reconnecting a device, run `rosenv sync` and restart the driver. Sync resolves the stable name again and replaces the container when its recorded host device identity changes. This is not automatic hotplug support for an already running process. Use a separate configuration without devices for development away from the hardware. GUI/GPU forwarding remains outside this implementation.
+
 ## Locking and reproducibility
 
 Commit `rosenv.toml` and `rosenv.lock` together. The manifest expresses your intent; the JSON lock records the official base image digest, architecture, selected groups, requested dependencies, and complete installed Debian package inventory.
@@ -86,6 +144,8 @@ Commit `rosenv.toml` and `rosenv.lock` together. The manifest expresses your int
 | `rosenv run --no-sync -- COMMAND` | Uses an existing project environment without reconciling its package inventory. |
 
 `run`, `shell`, `build`, `test`, and named task execution synchronize automatically. They accept `--locked`, `--frozen`, and `--no-sync`. Choose `--locked` in automation to fail on uncommitted dependency changes. `--frozen` is an intentional escape hatch: the locked ROS version and packages can differ from the current manifest.
+
+New locks use schema 2 and contain dependency information only. Runtime configuration always comes from the selected manifest, including with `--frozen`. Schema 1 locks remain readable: `--locked`/`lock --check` accept matching dependencies without rewriting the file, and ordinary `lock`/`sync` migrate it without resolving packages again. For compatibility, **`--frozen` with a schema 1 lock retains that lock's network and domain ID** until migration. Device mappings and variables still come from the manifest. Older rosenv clients cannot read schema 2 locks; update collaborating clients when committing a migrated lock.
 
 Synchronization checks the installed package inventory. When packages drift or dependencies change, rosenv replaces the container while retaining the host workspace and private home. Use `rosenv add` for durable dependency changes rather than installing ad hoc packages in a container.
 

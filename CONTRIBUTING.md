@@ -33,6 +33,8 @@ uv run python scripts/smoke_test.py --distros jazzy --report /tmp/rosenv-environ
 uv run python scripts/project_smoke.py --distro jazzy --report /tmp/rosenv-project.json
 ```
 
+The project smoke test also checks runtime variables, domain changes, network/device replacement using `/dev/null`, alternate manifests, and read-only sync previews.
+
 The scripts download images and packages, create temporary registries and environments, and exercise cleanup. Keep report paths outside your repository unless preparing a reviewed, sanitized validation artifact. Run against a development machine with sufficient disk space. Add Humble when changing cross-distribution behavior; Lyrical is covered by the extended workflow.
 
 ## Design expectations
@@ -45,3 +47,11 @@ The scripts download images and packages, create temporary registries and enviro
 - Keep package metadata, runtime version, docs, and changelog consistent. Do not commit `.env`, credentials, workstation receipts, or macOS `._*` files.
 
 Pull requests should explain the concrete behavior change and the checks that support it. CI runs with read-only repository permissions; releases use a separate gated job. There is no requirement to claim hardware support for a change validated only in containers.
+
+## Physical device checks
+
+Use a separate workspace and `ROSENV_HOME` registry for hardware validation. Declare the actual device with a stable host path, for example `devices = ["/dev/serial/by-id/YOUR_DEVICE:/dev/ttyACM0:rw"]` under `[environment]`. Confirm the driver can open the port as the normal host UID; a device node's presence alone is not a successful hardware test. For a LiDAR, additionally subscribe to point-cloud and IMU topics and check for nonempty data. Keep machine-specific paths, serial numbers, measurements, and reports outside the repository.
+
+For the [official Unitree L2 driver](https://github.com/unitreerobotics/unilidar_sdk2), serial operation uses `initialize_type:=1`, `work_mode:=8`, and the mapped `serial_port`. Preserve the serial work-mode bit: the driver sends its work mode on startup. The sensor needs its separate power supply in addition to USB. Follow the vendor's setup instructions for the device before running it.
+
+Check the lifecycle separately: change a command variable and verify the container/image IDs and lockfile are unchanged; change a device mapping or network and verify only the container changes. Unplug the USB adapter, confirm sync reports the missing device without replacing the existing environment, then reconnect, sync, and restart the driver. This exercises explicit resynchronization; it does not establish automatic hotplug support.

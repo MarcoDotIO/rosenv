@@ -14,9 +14,9 @@ from . import __version__
 from .backend import BackendError, DockerBackend
 from .catalog import DISTROS, image_for
 from .project import Project, ProjectError, load, normalize_package, project_lock
+from .runtime import resolve_devices
 from .state import Store, atomic_write
 
-LOCKFILE = "rosenv.lock"
 _ID = re.compile(r"sha256:[0-9a-f]{64}\Z")
 _SPEC = re.compile(r"[a-z0-9][a-z0-9+.-]*\Z")
 _VERSION = re.compile(r"[A-Za-z0-9][A-Za-z0-9.+:~_-]*\Z")
@@ -29,18 +29,19 @@ def digest(data: dict) -> str:
 
 
 def environment_name(project: Project) -> str:
-    location = hashlib.sha256(str(project.root).encode()).hexdigest()[:10]
+    identity = project.root if project.manifest_name == "rosenv.toml" else project.path
+    location = hashlib.sha256(str(identity).encode()).hexdigest()[:10]
     return f"{project.name[:32]}-{location}"
 
 
 def read_lock(project: Project) -> dict:
-    path = project.root / LOCKFILE
+    path = project.lock_path
     try:
         lock = json.loads(path.read_text())
         if (
             not isinstance(lock, dict)
             or type(lock["schema"]) is not int
-            or lock["schema"] != 1
+            or lock["schema"] not in {1, 2}
             or lock["ros"] not in DISTROS
         ):
             raise ValueError("unsupported schema or ROS distribution")
@@ -51,12 +52,17 @@ def read_lock(project: Project) -> dict:
             for g in lock["groups"]
         ):
             raise ValueError("invalid dependency groups")
-        settings = lock["environment"]
-        if not isinstance(settings, dict) or settings["network"] not in {"bridge", "host", "none"}:
-            raise ValueError("invalid environment network")
-        domain = settings["domain_id"]
-        if domain is not None and (type(domain) is not int or not 0 <= domain <= 232):
-            raise ValueError("invalid environment domain ID")
+        if lock["schema"] == 1:
+            settings = lock["environment"]
+            if not isinstance(settings, dict) or settings["network"] not in {
+                "bridge",
+                "host",
+                "none",
+            }:
+                raise ValueError("invalid environment network")
+            domain = settings["domain_id"]
+            if domain is not None and (type(domain) is not int or not 0 <= domain <= 232):
+                raise ValueError("invalid environment domain ID")
         if not re.fullmatch(r"[0-9a-f]{64}", lock["fingerprint"]):
             raise ValueError("invalid manifest fingerprint")
         if not _ID.fullmatch(lock["image_id"]) or not _ID.fullmatch(lock["base_id"]):
@@ -83,11 +89,61 @@ def read_lock(project: Project) -> dict:
             raise ValueError("invalid requested dependencies")
         for dependency in lock["requested"]:
             normalize_package(lock["ros"], "apt:" + dependency)
+        if lock["schema"] == 2 and lock["fingerprint"] != dependency_fingerprint(lock):
+            raise ValueError("dependency fingerprint does not match the locked request")
         return lock
     except FileNotFoundError:
-        raise ProjectError("No rosenv.lock found. Run 'rosenv lock' or 'rosenv sync'.") from None
+        raise ProjectError(f"No {path.name} found. Run 'rosenv lock' or 'rosenv sync'.") from None
     except (ValueError, TypeError, KeyError) as exc:
         raise ProjectError(f"Invalid {path}: {exc}") from None
+
+
+def dependency_fingerprint(lock: dict) -> str:
+    return digest(
+        {
+            "schema": 2,
+            "distro": lock["ros"],
+            "variant": lock["variant"],
+            "dependencies": sorted(lock["requested"]),
+            "groups": sorted(lock["groups"]),
+        }
+    )
+
+
+def package_signature(lock: dict) -> str:
+    # Ignore timestamps, generator versions, and legacy runtime configuration.
+    return digest(
+        {
+            key: lock[key]
+            for key in (
+                "ros",
+                "variant",
+                "base_id",
+                "base_digest",
+                "architecture",
+                "os",
+                "packages",
+            )
+        }
+    )
+
+
+def runtime_settings(project: Project) -> dict:
+    try:
+        devices = resolve_devices(project.devices)
+    except ValueError as exc:
+        raise ProjectError(str(exc)) from None
+    return {"network": project.network, "domain_id": project.domain_id, "devices": devices}
+
+
+def cached_image(lock: dict, old: dict | None, backend: DockerBackend) -> dict | None:
+    image = backend.image_info(lock["image_id"])
+    if image is None and old and old.get("package_signature") == package_signature(lock):
+        # Exact reconstruction may produce a different image ID from the portable lock.
+        # Reuse that verified image for subsequent runtime-only replacements.
+        if old["image_id"] != lock["image_id"]:
+            image = backend.image_info(old["image_id"])
+    return image
 
 
 def lock_project(
@@ -100,14 +156,25 @@ def lock_project(
     upgrade=False,
 ) -> dict:
     with project_lock(project.root):
-        project = load(project.root)
+        project = load(project.path)
         fingerprint = project.fingerprint(groups or [], no_dev=no_dev)
-        existing = read_lock(project) if (project.root / LOCKFILE).exists() else None
-        if existing and existing["fingerprint"] == fingerprint and not upgrade:
+        existing = read_lock(project) if project.lock_path.exists() else None
+        if existing and dependency_fingerprint(existing) == fingerprint and not upgrade:
+            if existing["schema"] == 1 and not check:
+                existing = {
+                    **existing,
+                    "schema": 2,
+                    "fingerprint": fingerprint,
+                    "generator": f"rosenv {__version__}",
+                }
+                existing.pop("environment", None)
+                atomic_write(
+                    project.lock_path, json.dumps(existing, indent=2, sort_keys=True) + "\n"
+                )
             return existing
         if check:
             raise ProjectError(
-                "rosenv.lock is missing or stale for these dependencies/groups. Run 'rosenv lock'."
+                f"{project.lock_path.name} is missing or stale for these dependencies/groups. Run 'rosenv lock'."
             )
         prepared = backend.prepare_image(
             image_for(project.distro, project.variant),
@@ -115,14 +182,13 @@ def lock_project(
             fingerprint=fingerprint,
         )
         lock = {
-            "schema": 1,
+            "schema": 2,
             "generator": f"rosenv {__version__}",
             "created_at": datetime.now(timezone.utc).isoformat(),
             "fingerprint": fingerprint,
             "ros": project.distro,
             "variant": project.variant,
             "groups": project.selected_groups(groups or [], no_dev=no_dev),
-            "environment": {"network": project.network, "domain_id": project.domain_id},
             "requested": project.effective_dependencies(groups or [], no_dev=no_dev),
             "base_digest": prepared["base_digest"],
             "base_id": prepared["base_id"],
@@ -131,7 +197,7 @@ def lock_project(
             "os": prepared["os"],
             "packages": prepared["packages"],
         }
-        atomic_write(project.root / LOCKFILE, json.dumps(lock, indent=2, sort_keys=True) + "\n")
+        atomic_write(project.lock_path, json.dumps(lock, indent=2, sort_keys=True) + "\n")
         return lock
 
 
@@ -168,12 +234,16 @@ def sync_project(
     if project.root.is_relative_to(store.root):
         raise ProjectError("Project must be outside ROSENV_HOME.")
     with project_lock(project.root):
-        project = load(project.root)
+        project = load(project.path)
+        # Fail on disconnected or invalid devices before resolving packages or replacing anything.
+        runtime = runtime_settings(project)
         lock = (
             read_lock(project)
             if frozen
             else lock_project(project, backend, groups=groups, no_dev=no_dev, check=locked)
         )
+        if frozen and lock["schema"] == 1:
+            runtime.update(lock["environment"])
         host_arch = {"x86_64": "amd64", "aarch64": "arm64", "arm64": "arm64"}.get(
             platform.machine()
         )
@@ -182,7 +252,8 @@ def sync_project(
                 f"Lock targets {lock['architecture']}; this host is {host_arch}. Generate a lock for this architecture."
             )
         name = environment_name(project)
-        signature = digest(lock)
+        signature = package_signature(lock)
+        container_signature = digest({"network": runtime["network"], "devices": runtime["devices"]})
         with store.lock():
             old = store.load(name) if store.path(name).exists() else None
             if old:
@@ -201,13 +272,37 @@ def sync_project(
             if old:
                 old = clean_retired(old, store, backend)
                 info = backend.inspect(old)  # Verify engine/ownership even if lock changed.
-                if info and old.get("lock_signature") == signature:
+                same_packages = old.get("package_signature") == signature or (
+                    old.get("package_signature") is None
+                    and old["image_id"] == lock["image_id"]
+                    and old["ros_distro"] == lock["ros"]
+                )
+                same_runtime = old.get("container_signature") == container_signature or (
+                    old.get("container_signature") is None
+                    and old["network"] == runtime["network"]
+                    and not runtime["devices"]
+                )
+                if info and same_packages and same_runtime:
                     backend.ensure_running(old)
                     if _inventory_key(backend.package_inventory(old)) == _inventory_key(
                         lock["packages"]
                     ):
-                        return old
-            image = backend.image_info(lock["image_id"])
+                        updated = {
+                            **old,
+                            "domain_id": runtime["domain_id"]
+                            if runtime["domain_id"] is not None
+                            else old["domain_id"],
+                            "package_signature": signature,
+                            "container_signature": container_signature,
+                            "requested_packages": lock["requested"],
+                            "lock_signature": digest(lock),
+                            "project_manifest": str(project.path),
+                            "devices": runtime["devices"],
+                        }
+                        if updated != old:
+                            store.save(updated)
+                        return updated
+            image = cached_image(lock, old, backend)
             if image is None:
                 image = backend.prepare_image(
                     lock["base_digest"],
@@ -220,7 +315,7 @@ def sync_project(
                     or image["architecture"] != lock["architecture"]
                 ):
                     raise ProjectError("Rebuilt image does not match the locked base/platform.")
-            domain = lock["environment"]["domain_id"]
+            domain = runtime["domain_id"]
             if domain is None:
                 if old:
                     domain = old["domain_id"]
@@ -244,11 +339,15 @@ def sync_project(
                 "home": str(store.env_dir(name) / "home"),
                 "uid": os.getuid(),
                 "gid": os.getgid(),
-                "network": lock["environment"]["network"],
+                "network": runtime["network"],
+                "devices": runtime["devices"],
                 "domain_id": domain,
                 "created_at": datetime.now(timezone.utc).isoformat(),
                 "project_root": str(project.root),
-                "lock_signature": signature,
+                "lock_signature": digest(lock),
+                "package_signature": signature,
+                "container_signature": container_signature,
+                "project_manifest": str(project.path),
                 "requested_packages": lock["requested"],
                 "ready": False,
             }
@@ -274,6 +373,68 @@ def sync_project(
                 raise
             clean_retired(state, store, backend)
             return state
+
+
+def plan_sync(
+    project: Project,
+    store: Store,
+    backend: DockerBackend,
+    *,
+    groups=None,
+    no_dev=False,
+    locked=False,
+    frozen=False,
+) -> str:
+    """Read configuration and resource metadata without starting or changing resources."""
+    project = load(project.path)
+    runtime = runtime_settings(project)
+    lock = read_lock(project) if project.lock_path.exists() else None
+    if frozen and lock is None:
+        read_lock(project)  # Give the same missing-lock diagnostic as sync.
+    if not frozen and (
+        lock is None or dependency_fingerprint(lock) != project.fingerprint(groups, no_dev)
+    ):
+        if locked:
+            raise ProjectError(
+                f"{project.lock_path.name} is missing or stale for these dependencies/groups."
+            )
+        return "Resolve dependencies and prepare an image: package lock is missing or stale."
+    if frozen and lock["schema"] == 1:
+        runtime.update(lock["environment"])
+    name = environment_name(project)
+    old = store.load(name) if store.path(name).exists() else None
+    if old and (old.get("ready") is False or old.get("retired")):
+        return (
+            "Recover interrupted synchronization; run rosenv sync to reconcile recorded resources."
+        )
+    reasons = []
+    if old:
+        if old.get("project_root") != str(project.root):
+            raise ProjectError(f"Environment name collision: {name}")
+        info = backend.inspect(old)
+        if not info:
+            reasons.append("container is missing")
+        if old["network"] != runtime["network"]:
+            reasons.append("network changed")
+        if old.get("devices", []) != runtime["devices"]:
+            reasons.append("devices or their host identities changed")
+        if (
+            old.get("package_signature") != package_signature(lock)
+            and old["image_id"] != lock["image_id"]
+        ):
+            reasons.append("locked packages changed")
+        if not reasons:
+            return (
+                "Reuse container if its package inventory still matches; apply current command variables/domain ID. "
+                "Inventory verification is deferred to sync; no container was started."
+            )
+    image = cached_image(lock, old, backend)
+    action = "Replace container (" + ", ".join(reasons) + ")" if old else "Create container"
+    return action + (
+        " using the cached dependency image."
+        if image
+        else " after reconstructing the exact locked dependency image (cache miss)."
+    )
 
 
 def existing_project_environment(project: Project, store: Store) -> dict:

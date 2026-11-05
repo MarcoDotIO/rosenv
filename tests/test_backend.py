@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from rosenv.backend import BackendError, DockerBackend
+from rosenv.runtime import resolve_devices
 
 
 class BackendTests(unittest.TestCase):
@@ -61,6 +62,36 @@ class BackendTests(unittest.TestCase):
         record = self.container()
         with patch.object(self.backend, "_docker", return_value=self.result([record])):
             self.assertEqual(self.backend.inspect(self.state), record)
+
+    def test_device_creation_maps_only_requested_devices_and_adds_numeric_groups(self):
+        self.state["network"] = "host"
+        self.state["devices"] = resolve_devices(["/dev/null:/dev/probe:rw"])
+        with (
+            patch.object(self.backend, "inspect", return_value=None),
+            patch.object(self.backend, "_required", return_value=self.container()),
+            patch.object(self.backend, "_docker", return_value=self.result()) as docker,
+        ):
+            self.backend.create(self.state)
+        args = next(
+            call.args[0]
+            for call in docker.call_args_list
+            if call.args[0][:2] == ["container", "run"]
+        )
+        self.assertEqual(args[args.index("--device") + 1], "/dev/null:/dev/probe:rw")
+        self.assertEqual(args[args.index("--group-add") + 1], str(Path("/dev/null").stat().st_gid))
+        self.assertNotIn("--privileged", args)
+        self.assertIn("1000:1000", args)
+
+    def test_changed_device_is_rejected_before_container_creation(self):
+        self.state["devices"] = resolve_devices(["/dev/null:/dev/probe:rw"])
+        self.state["devices"][0]["inode"] += 1
+        with (
+            patch.object(self.backend, "inspect", return_value=None),
+            patch.object(self.backend, "_docker") as docker,
+        ):
+            with self.assertRaisesRegex(BackendError, "Device identity changed"):
+                self.backend.create(self.state)
+        docker.assert_not_called()
 
     def test_inspect_rejects_foreign_token_even_when_uid_matches(self) -> None:
         record = self.container(**{"io.rosenv.token": "some-other-environment"})

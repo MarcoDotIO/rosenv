@@ -2,6 +2,11 @@
 
 ## 0.2.0 — Unreleased
 
+- Separate runtime configuration from dependency locks; network/domain edits no longer refresh packages or rebuild images. Read existing schema 1 locks and migrate to dependency-only schema 2 without re-resolving.
+- Add TOML command variables and repeatable `--set-env` overrides for execution commands.
+- Map explicit Linux devices with their required numeric groups and detect changed device identities during sync.
+- Add `--config` for independent manifests/locks/environments and `sync --dry-run` for read-only reconciliation previews.
+
 - Add project manifests and lockfiles with a pinned ROS base image and complete Debian package inventory.
 - Add dependency groups, locked synchronization, package removal, distro pinning, argv-based tasks, and colcon build/test commands.
 - Add package inspection, exports, and prepared-image cache management.

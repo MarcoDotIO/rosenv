@@ -9,6 +9,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from .catalog import DISTROS
+from .runtime import validate_devices
 
 SELECTOR = ".rosenv-version"
 NAME_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,47}\Z")
@@ -100,6 +101,19 @@ class Store:
             raise ValueError("invalid environment home")
         if not Path(data["workspace"]).is_absolute():
             raise ValueError("workspace must be absolute")
+        devices = data.get("devices", [])
+        if not isinstance(devices, list) or any(not isinstance(device, dict) for device in devices):
+            raise ValueError("invalid devices")
+        validate_devices(
+            [f"{device['source']}:{device['target']}:{device['permissions']}" for device in devices]
+        )
+        for device in devices:
+            validate_devices([device["path"]])
+            if any(
+                type(device[key]) is not int or device[key] < 0
+                for key in ("major", "minor", "gid", "mode", "inode")
+            ):
+                raise ValueError("invalid device identity")
 
     def save(self, data: dict) -> None:
         self.validate(data, data["name"])

@@ -122,6 +122,63 @@ def main():
         assert exported == lock
         call(["export", "--locked", "--format", "dockerfile", "-o", str(root / "Dockerfile")])
         assert "FROM docker.io/library/ros@sha256:" in (root / "Dockerfile").read_text()
+        # Runtime edits must not re-resolve packages or rebuild dependency images.
+        document = tomlkit.parse(manifest.read_text())
+        document["environment"]["domain-id"] = 117
+        document["environment"]["variables"] = {"ROSENV_PROBE": "from-toml"}
+        manifest.write_text(tomlkit.dumps(document))
+        assert call(["run", "--locked", "--", "printenv", "ROS_DOMAIN_ID"]).strip() == "117"
+        assert call(["run", "--locked", "--", "printenv", "ROSENV_PROBE"]).strip() == "from-toml"
+        assert (
+            call(
+                [
+                    "run",
+                    "--locked",
+                    "--set-env",
+                    "ROSENV_PROBE=override",
+                    "--",
+                    "printenv",
+                    "ROSENV_PROBE",
+                ]
+            ).strip()
+            == "override"
+        )
+        assert json.loads(call(["show", "--json"]))["container"] == old_container
+        assert lockpath.read_bytes() == lockbytes
+        document["environment"]["network"] = "none"
+        document["environment"]["devices"] = ["/dev/null:/dev/rosenv-probe:rw"]
+        manifest.write_text(tomlkit.dumps(document))
+        assert "network changed" in call(["sync", "--locked", "--dry-run"])
+        assert json.loads(call(["show", "--json"]))["container"] == old_container
+        call(["sync", "--locked"])
+        state = json.loads(call(["show", "--json"]))
+        assert state["container"] != old_container
+        assert state["image_id"] == lock["image_id"]
+        assert lockpath.read_bytes() == lockbytes
+        call(
+            [
+                "run",
+                "--locked",
+                "--",
+                "python3",
+                "-c",
+                "import os; f=os.open('/dev/rosenv-probe', os.O_RDWR); os.close(f)",
+            ]
+        )
+        assert call(["run", "--locked", "--", "cat", "/home/rosenv/keep"]) == "retained"
+        # Alternate manifests keep their own receipts/locks and reuse the same cached image.
+        alternate = workspace / "rosenv.robot.toml"
+        alternate.write_text(manifest.read_text())
+        alternate.with_suffix(".lock").write_bytes(lockbytes)
+        call(["--config", alternate.name, "sync", "--locked"])
+        other = json.loads(call(["--config", alternate.name, "show", "--json"]))
+        assert other["container"] != state["container"]
+        assert other["home"] != state["home"]
+        assert other["image_id"] == state["image_id"]
+        call(["env", "remove", other["name"], "--yes"])
+        alternate.unlink()
+        alternate.with_suffix(".lock").unlink()
+        old_container = state["container"]
         call(["remove", "apt:figlet", "--no-sync"])
         call(["sync", "--locked"], expected=1)
         assert json.loads(call(["show", "--json"]))["container"] == old_container

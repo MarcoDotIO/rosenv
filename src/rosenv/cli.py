@@ -16,6 +16,7 @@ from .backend import BackendError, DockerBackend
 from .catalog import DISTROS, image_for
 from .commands import dispatch_project, extend_parser, selection_options
 from .project import ProjectError
+from .runtime import parse_variables
 from .state import StateError, Store, validate_name
 
 
@@ -272,6 +273,10 @@ def dispatch(args, store: Store, backend: DockerBackend) -> int:
             ):
                 print(f"{key}: {state[key]}")
     elif action in ("run", "shell", "add"):
+        try:
+            variables = parse_variables(getattr(args, "set_env", []))
+        except ValueError as exc:
+            raise StateError(str(exc)) from None
         command = []
         if action == "run":
             command = args.command
@@ -295,7 +300,12 @@ def dispatch(args, store: Store, backend: DockerBackend) -> int:
                     )
                     store.save(state)
                 return code
-        return backend.run(state, command, interactive=action == "shell")
+        return backend.run(
+            state,
+            command,
+            interactive=action == "shell",
+            **({"variables": variables} if variables else {}),
+        )
     elif action == "stop":
         with store.lock():
             backend.stop(store.load(args.name))
@@ -343,6 +353,8 @@ def main(argv: list[str] | None = None, *, _force_env: bool = False) -> int:
         if args.directory:
             os.chdir(args.directory)
         if args.action == "env":
+            if args.config:
+                raise ProjectError("--config applies to project commands only.")
             if not args.arguments:
                 raise StateError("Use rosenv env create/list/show/stop/remove.")
             if args.arguments[0] not in {
