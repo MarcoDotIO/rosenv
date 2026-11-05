@@ -22,6 +22,8 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from .runtime import resolve_devices, validate_variables
+
 OWNER_LABEL = "io.rosenv.uid"
 TOKEN_LABEL = "io.rosenv.token"
 CACHE_LABEL = "io.rosenv.cache"
@@ -710,6 +712,18 @@ class DockerBackend:
         uid, gid = int(state["uid"]), int(state["gid"])
         if uid <= 0 or gid < 0:
             raise BackendError("Environments require a non-root host user and valid group ID.")
+        devices = state.get("devices", [])
+        try:
+            current = resolve_devices(
+                [
+                    f"{device['source']}:{device['target']}:{device['permissions']}"
+                    for device in devices
+                ]
+            )
+        except ValueError as exc:
+            raise BackendError(str(exc)) from None
+        if current != devices:
+            raise BackendError("Device identity changed during sync; retry rosenv sync.")
         network_created = False
         container_attempted = False
         try:
@@ -744,6 +758,10 @@ class DockerBackend:
                 "--mount",
                 self._mount(state["home"], "/home/rosenv"),
             ]
+            for device in devices:
+                args += ["--device", f"{device['path']}:{device['target']}:{device['permissions']}"]
+            for group in sorted({device["gid"] for device in devices}):
+                args += ["--group-add", str(group)]
             for key, value in self._labels(state).items():
                 args += ["--label", f"{key}={value}"]
             args += ["--entrypoint", "/bin/sleep", state["image_id"], "infinity"]
@@ -820,6 +838,7 @@ class DockerBackend:
         interactive: bool = False,
         *,
         workdir: str | None = None,
+        variables: dict[str, str] | None = None,
     ) -> int:
         """Run argv inside ROS, or open a setup-aware shell with empty argv."""
         if not command:
@@ -828,6 +847,10 @@ class DockerBackend:
             command = ["/bin/bash", "--rcfile", "/etc/rosenv.bashrc", "-i"]
         if any(not isinstance(arg, str) or "\0" in arg for arg in command):
             raise BackendError("Command arguments must be strings without NUL bytes.")
+        try:
+            validate_variables(variables or {})
+        except ValueError as exc:
+            raise BackendError(str(exc)) from None
         workdir = "/workspace" if workdir is None else workdir
         if (
             not isinstance(workdir, str)
@@ -848,6 +871,12 @@ class DockerBackend:
         args = ["container", "exec", "--interactive"]
         if sys.stdin.isatty() and sys.stdout.isatty():
             args.append("--tty")
+        environment = {}
+        if "domain_id" in state:
+            environment["ROS_DOMAIN_ID"] = str(state["domain_id"])
+        environment.update(variables or {})
+        for key, value in sorted(environment.items()):
+            args += ["--env", f"{key}={value}"]
         args += [
             "--user",
             f"{state['uid']}:{state['gid']}",

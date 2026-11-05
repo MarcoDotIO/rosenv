@@ -9,13 +9,15 @@ import sys
 from pathlib import Path
 
 from .catalog import DISTROS
-from .project import ProjectError, discover, initialize, project_lock
+from .project import ProjectError, discover, initialize, load, project_lock
+from .runtime import parse_variables
 from .state import atomic_write
 from .workflow import (
     command_workdir,
     existing_project_environment,
     export_lock,
     lock_project,
+    plan_sync,
     read_lock,
     sync_project,
 )
@@ -33,6 +35,13 @@ def selection_options(parser, *, execute=False):
     )
     if execute:
         parser.add_argument(
+            "--set-env",
+            action="append",
+            default=[],
+            metavar="NAME=VALUE",
+            help="Set a command environment variable (repeatable; overrides TOML)",
+        )
+        parser.add_argument(
             "--no-sync",
             action="store_true",
             help="Use the existing environment without locking or syncing",
@@ -41,6 +50,9 @@ def selection_options(parser, *, execute=False):
 
 def extend_parser(parser, sub):
     parser.add_argument("-C", "--directory", type=Path, help="Run from this directory")
+    parser.add_argument(
+        "--config", type=Path, help="Use this .toml manifest and its sibling .lock file"
+    )
     env = sub.add_parser("env", help="Manage named environments (create, list, show, remove, stop)")
     env.add_argument("arguments", nargs=argparse.REMAINDER)
     for action in ("lock", "sync", "export", "tree", "build", "test", "task"):
@@ -57,7 +69,13 @@ def extend_parser(parser, sub):
             }[action],
         )
         selection_options(item, execute=action in {"build", "test", "task"})
-        if action == "lock":
+        if action == "sync":
+            item.add_argument(
+                "--dry-run",
+                action="store_true",
+                help="Preview sync without changing files or containers",
+            )
+        elif action == "lock":
             item.add_argument(
                 "--check",
                 action="store_true",
@@ -118,11 +136,49 @@ def _lock(args, project, backend):
 def dispatch_project(args, store, backend):
     """Return None for a legacy command, otherwise the command's exit status."""
     action = args.action
+    config = getattr(args, "config", None)
+    if config and (config.suffix != ".toml" or config.is_dir()):
+        raise ProjectError("--config must select a .toml file.")
+    if config and action not in {
+        "init",
+        "lock",
+        "sync",
+        "export",
+        "tree",
+        "pin",
+        "build",
+        "test",
+        "task",
+        "run",
+        "shell",
+        "add",
+        "remove",
+        "show",
+    }:
+        raise ProjectError("--config applies to project commands only.")
     if action == "init":
-        root = args.workspace.expanduser().resolve()
+        if config and args.workspace != Path("."):
+            raise ProjectError(
+                "Use either --config or init --workspace to select a project location."
+            )
+        if config and (config.expanduser().exists() or config.expanduser().is_symlink()):
+            raise ProjectError(f"Project manifest already exists: {config}")
+        root = (
+            config.expanduser().resolve().parent
+            if config
+            else args.workspace.expanduser().resolve()
+        )
         root.mkdir(parents=True, exist_ok=True)
         name = args.name or re.sub(r"[^a-z0-9_-]", "-", root.name.lower())[:48].strip("-_")
-        project = initialize(root, name, args.distro, args.variant, args.network, args.domain_id)
+        project = initialize(
+            root,
+            name,
+            args.distro,
+            args.variant,
+            args.network,
+            args.domain_id,
+            manifest_name=config.name if config else "rosenv.toml",
+        )
         (root / "src").mkdir(exist_ok=True)
         ignore = root / ".gitignore"
         original = ignore.read_text() if ignore.exists() else ""
@@ -138,7 +194,8 @@ def dispatch_project(args, store, backend):
         if args.sync:
             sync_project(project, store, backend)
         print(f"Initialized {project.name}: {project.path}")
-        print("Next: rosenv add demo_nodes_cpp  ·  rosenv run -- ros2 --help")
+        prefix = shlex.join(["rosenv", "--config", str(project.path)]) if config else "rosenv"
+        print(f"Next: {prefix} add demo_nodes_cpp  ·  {prefix} run -- ros2 --help")
         return 0
     if action == "cache":
         if args.operation == "clean":
@@ -157,18 +214,27 @@ def dispatch_project(args, store, backend):
     if action not in candidates or getattr(args, "force_env", False):
         return None
     if getattr(args, "env", None) or os.environ.get("ROSENV_ENV"):
+        if config:
+            raise ProjectError(
+                "--config cannot be combined with --env or ROSENV_ENV; select one environment."
+            )
         if action in project_actions:
             raise ProjectError(
                 "Project commands use rosenv.toml; unset ROSENV_ENV before using this command."
             )
         return None
-    project = discover()
+    project = load(config) if config else discover()
     if project is None:
         if action in project_actions:
             raise ProjectError("No rosenv.toml found. Run 'rosenv init NAME' in your workspace.")
         return None
     if action == "remove" and args.yes:
+        if config:
+            raise ProjectError("Use rosenv env remove NAME --yes to delete an environment.")
         return None  # Backwards-compatible explicit environment deletion.
+    if action == "sync" and args.dry_run:
+        print(plan_sync(project, store, backend, **_options(args)))
+        return 0
     if action == "pin":
         project.set_distro(args.distro)
         print(f"Pinned {project.name} to ROS 2 {args.distro}. Run rosenv sync to update.")
@@ -209,8 +275,13 @@ def dispatch_project(args, store, backend):
             content = export_lock(lock, args.format)
             if args.output:
                 target = args.output.expanduser().resolve()
-                if target in {project.path, project.root / "rosenv.lock"}:
-                    raise ProjectError("Export cannot overwrite rosenv.toml or rosenv.lock.")
+                if target in {
+                    project.path,
+                    project.lock_path,
+                    project.root / "rosenv.toml",
+                    project.root / "rosenv.lock",
+                }:
+                    raise ProjectError("Export cannot overwrite project manifests or lockfiles.")
                 atomic_write(target, content)
                 print(f"Exported {target}")
             else:
@@ -253,6 +324,10 @@ def dispatch_project(args, store, backend):
         raise ProjectError("Provide a command after --.")
     if action == "task" and args.name not in project.tasks:
         raise ProjectError(f"Unknown task {args.name!r}. Use 'rosenv task' to list tasks.")
+    try:
+        variables = {**project.variables, **parse_variables(getattr(args, "set_env", []))}
+    except ValueError as exc:
+        raise ProjectError(str(exc)) from None
     state = (
         existing_project_environment(project, store)
         if getattr(args, "no_sync", False)
@@ -261,6 +336,9 @@ def dispatch_project(args, store, backend):
     if action == "sync":
         print(f"Synced {project.name} → {state['name']} (ROS 2 {state['ros_distro']}).")
         return 0
+    if getattr(args, "no_sync", False) and project.domain_id is not None:
+        state = {**state, "domain_id": project.domain_id}
+    runtime_options = {"variables": variables} if variables else {}
     if action in {"run", "shell", "task"}:
         command = (
             []
@@ -270,12 +348,16 @@ def dispatch_project(args, store, backend):
             )
         )
         return backend.run(
-            state, command, interactive=action == "shell", workdir=command_workdir(project)
+            state,
+            command,
+            interactive=action == "shell",
+            workdir=command_workdir(project),
+            **runtime_options,
         )
     command = ["colcon", action, *_arguments(args)]
     if action == "build" and "--symlink-install" not in command:
         command.append("--symlink-install")
-    status = backend.run(state, command)
+    status = backend.run(state, command, **runtime_options)
     if action == "test" and status == 0:
-        return backend.run(state, ["colcon", "test-result", "--verbose"])
+        return backend.run(state, ["colcon", "test-result", "--verbose"], **runtime_options)
     return status

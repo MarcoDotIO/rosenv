@@ -18,7 +18,7 @@ flowchart LR
 
 ## Manifest, lock, and runtime
 
-`rosenv.toml` records the project's ROS distribution, image variant, requested packages, groups, networking preferences, and tasks. `rosenv.lock` records the resolution for one architecture and group selection, including exact installed Debian versions and the base image identity. Commit both files.
+`rosenv.toml` records the project's ROS distribution, image variant, requested packages, groups, networking preferences, device mappings, command variables, and tasks. `rosenv.lock` records the resolution for one architecture and group selection, including exact installed Debian versions and the base image identity. Commit both files.
 
 Dependency resolution happens in a ROS container. Updating existing packages before installing requested packages avoids mixing a stale image's ROS libraries with a newer package repository. The resulting inventory is captured as a lock and a reusable prepared image.
 
@@ -46,4 +46,14 @@ The default dedicated bridge allows outbound package downloads and communication
 
 The supported runtime is a local Linux Docker host; Ubuntu 24.04 is the reference platform. macOS can use offline manifest commands and inspect help, but has no supported runtime backend. Windows is not supported by the CLI. Rootless Docker and alternative Docker-compatible engines are not established by the hosted integration matrix.
 
-Containers share a kernel and writable bind mounts. This is dependency/process isolation for trusted development, not a hostile-code sandbox. GUI, GPU, USB, hardware control, multi-host orchestration, native ROS installation, and cross-distribution ROS interoperability are outside the current implementation.
+Containers share a kernel and writable bind mounts. This is dependency/process isolation for trusted development, not a hostile-code sandbox. GUI, GPU, automatic USB hotplug, robot control logic, multi-host orchestration, native ROS installation, and cross-distribution ROS interoperability are outside the current implementation.
+
+## Runtime reconciliation
+
+Schema 2 package fingerprints exclude networking, domain IDs, devices, variables, and tasks. Runtime edits therefore retain exact locked package versions. Command variables and domain IDs are applied through `docker exec --env` to new processes; changing them does not replace the container. Existing processes keep their original environment. Variables are not persisted in environment receipts or images.
+
+Networking and resolved device identities have a separate container signature. Device declarations map individual character/block nodes with Docker `--device`, with supplementary numeric groups for the selected nodes. A change replaces the container from the locked image while preserving its workspace and private home. A missing cached image is reconstructed from exact locked versions. Device identity is resolved again during creation to detect disconnects between planning and creation. Reconnection requires synchronization and restarting affected commands; no background hotplug service is installed.
+
+The default manifest retains its existing environment naming scheme. An alternate manifest uses its full resolved path in the environment identity and its own sibling `.lock` file. Manifests in the same directory share the workspace and project edit lock but have separate containers and private homes.
+
+Schema 1 locks remain readable. Ordinary lock/sync migrates a dependency-matching lock to schema 2 without rebuilding; locked checks never rewrite it. Legacy frozen operations retain their locked network/domain settings until migration. Schema 2 frozen operations freeze only package selection, with runtime settings from the manifest.

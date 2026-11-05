@@ -189,6 +189,81 @@ class ProjectCliTests(unittest.TestCase):
         sync.assert_not_called()
         self.assertEqual(self.backend.mock_calls, [])
 
+    def test_variables_apply_to_run_shell_build_test_and_task_with_cli_precedence(self):
+        project = self.project()
+        project.variables = {"LABEL": "toml", "PERSISTED": "value"}
+        project.tasks = {"hello": ["echo", "hello"]}
+        project.save()
+        self.project_environment(project)
+        for command in (
+            ["run", "--", "printenv"],
+            ["shell"],
+            ["build"],
+            ["test"],
+            ["task", "hello"],
+        ):
+            with self.subTest(command=command):
+                self.backend.reset_mock()
+                argv = [command[0], "--no-sync", "--set-env", "LABEL=cli=value", *command[1:]]
+                self.assertEqual(self.invoke(*argv), 0)
+                for call in self.backend.run.call_args_list:
+                    self.assertEqual(
+                        call.kwargs["variables"], {"LABEL": "cli=value", "PERSISTED": "value"}
+                    )
+        self.assertEqual(load(self.workspace).variables["LABEL"], "toml")
+
+    def test_invalid_variable_override_fails_before_sync_or_docker(self):
+        self.project()
+        for assignment in (
+            "MISSING_EQUALS",
+            "ROS_DISTRO=humble",
+            "BAD-KEY=value",
+            "ROS_DOMAIN_ID=233",
+        ):
+            with self.subTest(assignment=assignment), patch("rosenv.commands.sync_project") as sync:
+                self.assertEqual(self.invoke("run", "--set-env", assignment, "--", "pwd"), 1)
+                sync.assert_not_called()
+        self.assertEqual(self.backend.mock_calls, [])
+
+    def test_named_environment_supports_variable_overrides(self):
+        state = self.environment()
+        self.assertEqual(
+            self.invoke("run", "-e", "legacy", "--set-env", "LABEL=one", "--", "printenv"), 0
+        )
+        self.backend.run.assert_called_once_with(
+            state, ["printenv"], interactive=False, variables={"LABEL": "one"}
+        )
+
+    def test_config_init_and_edits_target_selected_manifest_only(self):
+        project = self.project()
+        original = project.path.read_bytes()
+        self.assertEqual(self.invoke("--config", "rosenv.robot.toml", "init", "robot"), 0)
+        alternate = self.workspace / "rosenv.robot.toml"
+        self.assertIn(f"--config {alternate}", self.stdout.getvalue())
+        self.assertEqual(self.invoke("--config", str(alternate), "add", "rclpy", "--no-sync"), 0)
+        self.assertEqual(load(alternate).dependencies, ["rclpy"])
+        self.assertEqual(project.path.read_bytes(), original)
+        self.assertEqual(self.backend.mock_calls, [])
+        self.assertEqual(
+            self.invoke("--config", str(alternate), "run", "--env", "legacy", "--", "pwd"), 1
+        )
+        self.assertIn("cannot be combined", self.stderr.getvalue())
+
+    def test_explicit_missing_config_never_falls_back_to_default(self):
+        self.project()
+        self.assertEqual(self.invoke("--config", "missing.toml", "task"), 1)
+        self.assertIn("missing.toml", self.stderr.getvalue())
+        self.assertEqual(self.backend.mock_calls, [])
+
+    def test_dry_run_missing_lock_is_offline_and_writes_nothing(self):
+        project = self.project()
+        before = sorted(self.workspace.iterdir())
+        self.assertEqual(self.invoke("sync", "--dry-run"), 0)
+        self.assertIn("Resolve dependencies", self.stdout.getvalue())
+        self.assertEqual(sorted(self.workspace.iterdir()), before)
+        self.assertFalse(project.lock_path.exists())
+        self.assertEqual(self.backend.mock_calls, [])
+
     def test_no_sync_refuses_incomplete_environment_before_execution(self):
         project = self.project()
         state = self.project_environment(project)
