@@ -9,6 +9,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from rosenv import relay
 from rosenv.backend import BackendError, DockerBackend
 from rosenv.runtime import resolve_devices
 
@@ -35,7 +36,7 @@ class BackendTests(unittest.TestCase):
             "network": "bridge",
             "domain_id": 42,
         }
-        self.backend = DockerBackend(binary="docker")
+        self.backend = DockerBackend(binary="docker", relay_devices=False)
         self.backend._engine_id = "test-engine"
 
     def container(self, **labels: str) -> dict:
@@ -81,6 +82,78 @@ class BackendTests(unittest.TestCase):
         self.assertEqual(args[args.index("--group-add") + 1], str(Path("/dev/null").stat().st_gid))
         self.assertNotIn("--privileged", args)
         self.assertIn("1000:1000", args)
+
+    def test_relayed_devices_are_not_mapped_or_granted_groups(self):
+        self.backend.relay_devices = True
+        self.state["network"] = "host"
+        self.state["devices"] = resolve_devices(["/dev/null:/dev/probe:rw"])
+        with (
+            patch.object(self.backend, "inspect", return_value=None),
+            patch.object(self.backend, "_required", return_value=self.container()),
+            patch.object(self.backend, "_docker", return_value=self.result()) as docker,
+        ):
+            self.backend.create(self.state)
+        args = next(
+            call.args[0]
+            for call in docker.call_args_list
+            if call.args[0][:2] == ["container", "run"]
+        )
+        self.assertNotIn("--device", args)
+        self.assertNotIn("--group-add", args)
+
+    def test_relayed_block_device_is_rejected_before_container_creation(self):
+        self.backend.relay_devices = True
+        self.state["devices"] = resolve_devices(["/dev/null:/dev/probe:rw"])
+        with (
+            patch("rosenv.backend.resolve_devices", return_value=self.state["devices"]),
+            patch("rosenv.backend.stat.S_ISCHR", return_value=False),
+            patch.object(self.backend, "inspect", return_value=None),
+            patch.object(self.backend, "_docker") as docker,
+        ):
+            with self.assertRaisesRegex(BackendError, "serial character devices"):
+                self.backend.create(self.state)
+        docker.assert_not_called()
+
+    def test_run_starts_relays_for_the_current_container_before_the_command(self):
+        self.backend.relay_devices = True
+        self.state["devices"] = resolve_devices(["/dev/null:/dev/probe:rw"])
+        order = []
+        with (
+            patch.object(self.backend, "ensure_running"),
+            patch.object(self.backend, "_required", return_value=self.container()),
+            patch("rosenv.backend.relay.ensure", side_effect=lambda *a: order.append(a)),
+            patch.object(self.backend, "_stream", side_effect=lambda a: order.append("run") or 0),
+        ):
+            self.backend.run(self.state, ["true"])
+        self.assertEqual(order, [(self.state, "container-id", "docker"), "run"])
+
+    def test_relay_failure_is_reported_without_running_the_command(self):
+        self.backend.relay_devices = True
+        self.state["devices"] = resolve_devices(["/dev/null:/dev/probe:rw"])
+        with (
+            patch.object(self.backend, "ensure_running"),
+            patch.object(self.backend, "_required", return_value=self.container()),
+            patch("rosenv.backend.relay.ensure", side_effect=relay.RelayError("unplugged")),
+            patch.object(self.backend, "_stream") as stream,
+        ):
+            with self.assertRaisesRegex(BackendError, "unplugged"):
+                self.backend.run(self.state, ["true"])
+        stream.assert_not_called()
+
+    def test_stop_and_remove_stop_relays_first(self):
+        self.backend.relay_devices = True
+        self.state["devices"] = resolve_devices(["/dev/null:/dev/probe:rw"])
+        order = []
+        with (
+            patch.object(self.backend, "_required", return_value=self.container()),
+            patch.object(self.backend, "inspect", return_value=self.container()),
+            patch.object(self.backend, "_network", return_value=None),
+            patch("rosenv.backend.relay.stop", side_effect=lambda state: order.append("relay")),
+            patch.object(self.backend, "_docker", side_effect=lambda a, **k: order.append(a[1])),
+        ):
+            self.backend.stop(self.state)
+            self.backend.remove(self.state)
+        self.assertEqual(order, ["relay", "stop", "relay", "rm"])
 
     def test_changed_device_is_rejected_before_container_creation(self):
         self.state["devices"] = resolve_devices(["/dev/null:/dev/probe:rw"])

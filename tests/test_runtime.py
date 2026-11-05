@@ -103,7 +103,7 @@ def test_device_resolution_requires_actual_device_and_unique_targets(tmp_path):
     with pytest.raises(ValueError, match="Duplicate"):
         resolve_devices(["/dev/null:/dev/probe", "/dev/zero:/dev/probe"])
     with pytest.raises(ValueError, match="character or block"):
-        resolve_devices(["/dev/serial" if Path("/dev/serial").is_dir() else "/dev/pts"])
+        resolve_devices(["/dev/fd"])
 
 
 def test_run_forwards_variables_as_argv_with_current_domain():

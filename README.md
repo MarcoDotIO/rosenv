@@ -6,7 +6,7 @@
   <a href="https://github.com/MarcoDotIO/rosenv/actions/workflows/ci.yml"><img src="https://github.com/MarcoDotIO/rosenv/actions/workflows/ci.yml/badge.svg" alt="CI status"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-65e2b8" alt="MIT license"></a>
   <img src="https://img.shields.io/badge/Python-3.11%2B-6a8aac" alt="Python 3.11 or later">
-  <img src="https://img.shields.io/badge/host-Ubuntu%2024.04-6a8aac" alt="Ubuntu 24.04 host">
+  <img src="https://img.shields.io/badge/host-Ubuntu%2024.04%20%7C%20macOS-6a8aac" alt="Ubuntu 24.04 or macOS host">
 </p>
 
 **A project and dependency manager for ROS 2.** Choose a ROS distribution, declare packages, commit a lockfile, and run your workspace inside a persistent Docker environment.
@@ -18,14 +18,14 @@
 - **Distribution isolation.** Run Humble and Jazzy in separate environments on the same Ubuntu 24.04 host.
 - **Declarative dependencies.** `rosenv.toml` declares ROS and Ubuntu packages; `rosenv.lock` records the resolved package inventory and base image.
 - **Workspace execution.** `rosenv run`, `build`, and `test` enter the environment and source ROS plus your workspace overlay.
-- **Runtime configuration.** Try command variables with `--set-env`, save defaults in TOML, and map Linux devices without rebuilding dependency images. Select alternate manifests with `--config` and preview changes with `sync --dry-run`.
+- **Runtime configuration.** Try command variables with `--set-env`, save defaults in TOML, and map USB devices without rebuilding dependency images (serial devices on macOS). Select alternate manifests with `--config` and preview changes with `sync --dry-run`.
 - **Persistent storage.** The workspace is mounted from the host. Container replacement preserves the project workspace and private home.
 
 rosenv manages ROS userspace with Docker. It does not install ROS into the host operating system or promise isolation from hostile code.
 
 ## Install
 
-You need **Linux, Python 3.11+, and access to a running Docker Engine**. Ubuntu 24.04 is the tested host platform. Follow [Docker's Ubuntu installation guide](https://docs.docker.com/engine/install/ubuntu/) if necessary; rosenv does not change Docker permissions.
+You need **Linux or macOS, Python 3.11+, and access to a running Docker Engine**. Ubuntu 24.04 is the reference host platform; on macOS, use OrbStack or Docker Desktop. Follow [Docker's Ubuntu installation guide](https://docs.docker.com/engine/install/ubuntu/) if necessary; rosenv does not change Docker permissions.
 
 ```bash
 git clone https://github.com/MarcoDotIO/rosenv.git
@@ -126,7 +126,7 @@ Jazzy is the default. `ros-core`, `ros-base`, and `perception` select official i
 
 Default networking uses a dedicated Docker bridge and an allocated `ROS_DOMAIN_ID`. Host networking is opt-in for LAN discovery. Normal commands run with your host UID/GID; package management runs as root inside the container. Your mounted workspace and private home are writable, and files inside them are visible to container commands.
 
-A lock describes one architecture and selected dependency-group profile. Source overlays, arbitrary shell changes, host devices, and robot behavior are outside its package guarantee. Individual Linux devices can be mapped explicitly; see [device access](docs/guide.md#usb-and-other-device-access). This release does not provide GUI/GPU passthrough, a native macOS/Windows backend, or automatic host-shell activation. [Architecture and isolation](docs/architecture.md) explains the details.
+A lock describes one architecture and selected dependency-group profile. Source overlays, arbitrary shell changes, host devices, and robot behavior are outside its package guarantee. Individual Linux devices, and serial devices on macOS, can be mapped explicitly; see [device access](docs/guide.md#usb-and-other-device-access). This release does not provide GUI/GPU passthrough, a Windows backend, or automatic host-shell activation. [Architecture and isolation](docs/architecture.md) explains the details.
 
 ## Development
 

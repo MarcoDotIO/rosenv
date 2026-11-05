@@ -5,6 +5,7 @@
 - Separate runtime configuration from dependency locks; network/domain edits no longer refresh packages or rebuild images. Read existing schema 1 locks and migrate to dependency-only schema 2 without re-resolving.
 - Add TOML command variables and repeatable `--set-env` overrides for execution commands.
 - Map explicit Linux devices with their required numeric groups and detect changed device identities during sync.
+- Support macOS hosts with OrbStack or Docker Desktop, relaying declared serial devices into containers with baud-rate forwarding.
 - Add `--config` for independent manifests/locks/environments and `sync --dry-run` for read-only reconciliation previews.
 
 - Add project manifests and lockfiles with a pinned ROS base image and complete Debian package inventory.

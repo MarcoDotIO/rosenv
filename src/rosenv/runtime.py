@@ -5,6 +5,9 @@ import re
 import stat
 from pathlib import Path
 
+# Docker Desktop or OrbStack provide the Linux engine on macOS.
+HOST_SYSTEMS = ("Linux", "Darwin")
+
 
 def validate_variables(variables: dict[str, str]) -> None:
     if not isinstance(variables, dict):

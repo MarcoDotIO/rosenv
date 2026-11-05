@@ -44,7 +44,7 @@ The default dedicated bridge allows outbound package downloads and communication
 
 ## Scope
 
-The supported runtime is a local Linux Docker host; Ubuntu 24.04 is the reference platform. macOS can use offline manifest commands and inspect help, but has no supported runtime backend. Windows is not supported by the CLI. Rootless Docker and alternative Docker-compatible engines are not established by the hosted integration matrix.
+The supported runtime is a local Docker engine on Linux or macOS; Ubuntu 24.04 is the reference platform. On macOS, OrbStack or Docker Desktop runs the containers in a Linux virtual machine. That machine cannot open host device nodes, so mapped serial devices are relayed: a detached host process holds the port open exclusively and exchanges bytes with a helper inside the container, which presents a pseudo-terminal at the container path. Baud-rate changes made inside the container are applied to the host port. The relay starts on the first command that needs it, serves later commands in the same container, and stops with `env stop`, container replacement, removal, or device disconnection. Windows is not supported by the CLI. Rootless Docker and alternative Docker-compatible engines are not established by the hosted integration matrix.
 
 Containers share a kernel and writable bind mounts. This is dependency/process isolation for trusted development, not a hostile-code sandbox. GUI, GPU, automatic USB hotplug, robot control logic, multi-host orchestration, native ROS installation, and cross-distribution ROS interoperability are outside the current implementation.
 

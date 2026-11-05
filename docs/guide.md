@@ -127,6 +127,15 @@ Mappings use `HOST[:CONTAINER[:PERMISSIONS]]`. Both paths must be under `/dev`; 
 
 rosenv maps only the requested devices and adds their numeric host group IDs to the container user's supplementary groups. Commands continue to run as your host UID/GID. This requires neither a privileged container nor making the device world-writable. Device declarations are runtime settings and do not invalidate the dependency lock.
 
+**Serial devices on macOS.** Docker on macOS cannot pass host device nodes into containers, so rosenv relays serial devices instead. Use the `/dev/cu.*` name, which includes the adapter's serial number and stays stable across reconnects:
+
+```toml
+[environment]
+devices = ["/dev/cu.usbmodem5A2A0435191:/dev/ttyACM0:rw"]
+```
+
+The first `rosenv run`, `shell`, `task`, `build`, or `test` that needs the device opens it exclusively on the host and presents a pseudo-terminal owned by your user at the container path. Later commands in the same container reuse the relay. Drivers set the baud rate as usual, including non-standard rates such as 4,000,000. The relay carries data only: modem-control lines (DTR/RTS) and break signals are not forwarded. Only serial character devices are supported; block devices fail sync. `rosenv env stop` or unplugging the device stops the relay, and the next command starts it again. Another program that holds the port open, including a virtual machine with USB passthrough, prevents the relay from starting.
+
 After unplugging/reconnecting a device, run `rosenv sync` and restart the driver. Sync resolves the stable name again and replaces the container when its recorded host device identity changes. This is not automatic hotplug support for an already running process. Use a separate configuration without devices for development away from the hardware. GUI/GPU forwarding remains outside this implementation.
 
 ## Locking and reproducibility
