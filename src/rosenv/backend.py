@@ -16,12 +16,14 @@ import posixpath
 import re
 import shlex
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 from typing import Any
 
+from . import relay
 from .runtime import resolve_devices, validate_variables
 
 OWNER_LABEL = "io.rosenv.uid"
@@ -118,9 +120,11 @@ def _apt_transaction_script(commands: list[str]) -> str:
 class DockerBackend:
     """Manage persistent containers using the locally configured Docker engine."""
 
-    def __init__(self, binary: str = "docker") -> None:
+    def __init__(self, binary: str = "docker", *, relay_devices: bool | None = None) -> None:
         self.binary = binary
         self._engine_id: str | None = None
+        # Docker on macOS runs in a VM that cannot see host device nodes.
+        self.relay_devices = sys.platform == "darwin" if relay_devices is None else relay_devices
 
     def engine_id(self) -> str:
         """Identify the configured daemon, once per command/backend instance."""
@@ -724,6 +728,8 @@ class DockerBackend:
             raise BackendError(str(exc)) from None
         if current != devices:
             raise BackendError("Device identity changed during sync; retry rosenv sync.")
+        if self.relay_devices and any(not stat.S_ISCHR(device["mode"]) for device in devices):
+            raise BackendError("This host can relay serial character devices only.")
         network_created = False
         container_attempted = False
         try:
@@ -758,10 +764,15 @@ class DockerBackend:
                 "--mount",
                 self._mount(state["home"], "/home/rosenv"),
             ]
-            for device in devices:
-                args += ["--device", f"{device['path']}:{device['target']}:{device['permissions']}"]
-            for group in sorted({device["gid"] for device in devices}):
-                args += ["--group-add", str(group)]
+            # Relayed devices are presented by the relay helper when commands run.
+            if not self.relay_devices:
+                for device in devices:
+                    args += [
+                        "--device",
+                        f"{device['path']}:{device['target']}:{device['permissions']}",
+                    ]
+                for group in sorted({device["gid"] for device in devices}):
+                    args += ["--group-add", str(group)]
             for key, value in self._labels(state).items():
                 args += ["--label", f"{key}={value}"]
             args += ["--entrypoint", "/bin/sleep", state["image_id"], "infinity"]
@@ -868,6 +879,11 @@ class DockerBackend:
         workdir = posixpath.normpath(workdir)
         self.ensure_running(state)
         info = self._required(state)
+        if self.relay_devices and state.get("devices"):
+            try:
+                relay.ensure(state, info["Id"], self.binary)
+            except (OSError, relay.RelayError) as exc:
+                raise BackendError(str(exc)) from None
         args = ["container", "exec", "--interactive"]
         if sys.stdin.isatty() and sys.stdout.isatty():
             args.append("--tty")
@@ -928,11 +944,20 @@ class DockerBackend:
     def stop(self, state: dict[str, Any]) -> None:
         """Stop an owned container without deleting its packages or mounts."""
         info = self._required(state)
+        self._stop_relays(state)
         self._docker(["container", "stop", info["Id"]])
 
     def remove(self, state: dict[str, Any]) -> None:
         """Remove owned runtime resources, preserving all host directories."""
         info = self.inspect(state)
+        self._stop_relays(state)
         if info is not None:
             self._docker(["container", "rm", "--force", info["Id"]])
         self._remove_network(state)
+
+    def _stop_relays(self, state: dict[str, Any]) -> None:
+        if self.relay_devices and state.get("devices"):
+            try:
+                relay.stop(state)
+            except (OSError, relay.RelayError) as exc:
+                raise BackendError(str(exc)) from None

@@ -9,6 +9,8 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
+import tty
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -40,6 +42,14 @@ def main():
     }
     state = None
     images = set()
+    if sys.platform == "darwin":
+        # Docker cannot map macOS device nodes; exercise the serial relay with a pseudo-terminal.
+        sensor, port = os.openpty()
+        tty.setraw(sensor)
+        probe = os.ttyname(port)
+        os.close(port)
+    else:
+        sensor, probe = None, "/dev/null"
 
     def call(argv, *, expected=0, cwd=workspace, input=None, timeout=1200):
         print("rosenv " + " ".join(argv[:5]), flush=True)
@@ -146,7 +156,7 @@ def main():
         assert json.loads(call(["show", "--json"]))["container"] == old_container
         assert lockpath.read_bytes() == lockbytes
         document["environment"]["network"] = "none"
-        document["environment"]["devices"] = ["/dev/null:/dev/rosenv-probe:rw"]
+        document["environment"]["devices"] = [f"{probe}:/dev/rosenv-probe:rw"]
         manifest.write_text(tomlkit.dumps(document))
         assert "network changed" in call(["sync", "--locked", "--dry-run"])
         assert json.loads(call(["show", "--json"]))["container"] == old_container
@@ -165,6 +175,25 @@ def main():
                 "import os; f=os.open('/dev/rosenv-probe', os.O_RDWR); os.close(f)",
             ]
         )
+        if sensor is not None:
+            received = []
+
+            def answer():
+                data = b""
+                while len(data) < 4:
+                    data += os.read(sensor, 4 - len(data))
+                received.append(data)
+                os.write(sensor, b"pong")
+
+            responder = threading.Thread(target=answer, daemon=True)
+            responder.start()
+            script = (
+                "import os, tty; f = os.open('/dev/rosenv-probe', os.O_RDWR | os.O_NOCTTY); "
+                "tty.setraw(f); os.write(f, b'ping'); print(os.read(f, 4).decode())"
+            )
+            reply = call(["run", "--locked", "--", "python3", "-c", script], timeout=60)
+            responder.join(10)
+            assert received == [b"ping"] and reply.strip() == "pong"
         assert call(["run", "--locked", "--", "cat", "/home/rosenv/keep"]) == "retained"
         # Alternate manifests keep their own receipts/locks and reuse the same cached image.
         alternate = workspace / "rosenv.robot.toml"
@@ -245,6 +274,8 @@ def main():
         args.report.write_text(json.dumps(report, indent=2) + "\n")
         if not report["cleanup_errors"]:
             shutil.rmtree(root)
+        if sensor is not None:
+            os.close(sensor)
         print(f"{'PASS' if report['success'] else 'FAIL'}: {args.report}", flush=True)
     return 0 if report["success"] else 1
 

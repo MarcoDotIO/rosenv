@@ -16,17 +16,17 @@ from .backend import BackendError, DockerBackend
 from .catalog import DISTROS, image_for
 from .commands import dispatch_project, extend_parser, selection_options
 from .project import ProjectError
-from .runtime import parse_variables
+from .runtime import HOST_SYSTEMS, parse_variables
 from .state import StateError, Store, validate_name
 
 
 def parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        prog="rosenv", description="Isolated, persistent ROS 2 environments on Linux."
+        prog="rosenv", description="Isolated, persistent ROS 2 environments on Linux and macOS."
     )
     p.add_argument("--version", action="version", version=f"rosenv {__version__}")
     sub = p.add_subparsers(dest="action", required=True)
-    sub.add_parser("doctor", help="Check Linux and Docker access")
+    sub.add_parser("doctor", help="Check host and Docker access")
     sub.add_parser("distros", help="List available ROS 2 distributions")
     for action in ("create", "init"):
         c = sub.add_parser(
@@ -129,10 +129,8 @@ def packages_for(distro: str, packages: list[str]) -> list[str]:
 
 
 def create(args, store: Store, backend: DockerBackend) -> dict:
-    if platform.system() != "Linux":
-        raise StateError(
-            "Environment creation requires Linux with Docker. Run rosenv on your Ubuntu workstation."
-        )
+    if platform.system() not in HOST_SYSTEMS:
+        raise StateError("Environment creation requires Linux or macOS with Docker.")
     workspace = args.workspace.expanduser().resolve()
     if not workspace.is_dir():
         raise StateError(f"Workspace does not exist or is not a directory: {workspace}")
@@ -222,10 +220,8 @@ def dispatch(args, store: Store, backend: DockerBackend) -> int:
                 indent=2,
             )
         )
-        if platform.system() != "Linux":
-            raise StateError(
-                "This release supports a Linux Docker host; use your Ubuntu workstation."
-            )
+        if platform.system() not in HOST_SYSTEMS:
+            raise StateError("This release supports Linux or macOS with a Docker engine.")
     elif action == "distros":
         print(f"{'ROS 2':<12} {'UBUNTU':<9} {'EOL':<10} IMAGE")
         for distro, spec in DISTROS.items():

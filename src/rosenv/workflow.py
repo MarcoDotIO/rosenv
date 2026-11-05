@@ -14,7 +14,7 @@ from . import __version__
 from .backend import BackendError, DockerBackend
 from .catalog import DISTROS, image_for
 from .project import Project, ProjectError, load, normalize_package, project_lock
-from .runtime import resolve_devices
+from .runtime import HOST_SYSTEMS, resolve_devices
 from .state import Store, atomic_write
 
 _ID = re.compile(r"sha256:[0-9a-f]{64}\Z")
@@ -227,9 +227,9 @@ def sync_project(
     locked=False,
     frozen=False,
 ) -> dict:
-    if platform.system() != "Linux":
+    if platform.system() not in HOST_SYSTEMS:
         raise ProjectError(
-            "Sync requires a Linux Docker host. Project manifests can be edited on any supported Unix host."
+            "Sync requires Linux or macOS with Docker. Project manifests can be edited on any Unix host."
         )
     if project.root.is_relative_to(store.root):
         raise ProjectError("Project must be outside ROSENV_HOME.")

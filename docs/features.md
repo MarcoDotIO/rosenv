@@ -16,7 +16,7 @@ rosenv manages ROS distributions and Debian package dependencies in persistent D
 | Command execution | `rosenv run`, `rosenv shell` | Synchronizes the project and sources ROS plus any built workspace overlay. `--no-sync` uses the existing environment. |
 | Build and test | `rosenv build`, `rosenv test` | Runs colcon in the environment. Testing also checks colcon's recorded test results. |
 | Runtime variables | `[environment.variables]`, `--set-env NAME=VALUE` | Applies to new commands without rebuilding or replacing the container; CLI overrides TOML. |
-| Device access | `[environment].devices` | Maps individual Linux device nodes and their numeric groups; changed device identities require container replacement, not package resolution. |
+| Device access | `[environment].devices` | Maps individual Linux device nodes and their numeric groups, or relays serial devices on macOS; changed device identities require container replacement, not package resolution. |
 | Alternate configurations | `--config FILE.toml` | Uses a complete manifest with its own sibling lockfile and environment. |
 | Sync preview | `rosenv sync --dry-run` | Explains configuration-driven changes without writes or starting containers; inventory checking waits for actual sync. |
 | Tasks | `[tasks]`, `rosenv task` | Runs named argument arrays. Shell expansion requires an explicitly invoked shell. |
