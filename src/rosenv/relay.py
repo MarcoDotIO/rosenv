@@ -246,6 +246,12 @@ def serve(config: dict[str, Any], ready_fd: int) -> int:
             helper.wait(timeout=_STOP_TIMEOUT)
         except subprocess.TimeoutExpired:
             helper.kill()
+        # Exclusive mode outlives this descriptor while another process holds
+        # the port open, and would keep the next relay from opening it.
+        try:
+            fcntl.ioctl(device, termios.TIOCNXCL)
+        except OSError:
+            pass
         os.close(device)
 
 
